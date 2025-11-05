@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.0
+Version: 1.0.1
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -1040,6 +1040,62 @@ function gsp_connector_settings_content() {
         echo '<script>setTimeout(function(){ window.location.reload(); }, 1000);</script>';
     }
     
+    // GitHub debug kontrolü
+    if (isset($_POST['debug_github']) && wp_verify_nonce($_POST['_wpnonce'], 'debug_github')) {
+        if (!empty($github_username) && !empty($github_repo)) {
+            echo '<div class="notice notice-info is-dismissible" style="margin-top: 20px;">';
+            echo '<h3>🔍 GitHub Debug Bilgileri</h3>';
+            
+            // Release kontrolü
+            $releases_url = sprintf('https://api.github.com/repos/%s/%s/releases/latest', $github_username, $github_repo);
+            $response = wp_remote_get($releases_url, array(
+                'timeout' => 15,
+                'headers' => array('Accept' => 'application/vnd.github.v3+json', 'User-Agent' => 'WordPress-GSP-Connector'),
+                'sslverify' => true
+            ));
+            
+            if (is_wp_error($response)) {
+                echo '<p><strong>❌ Release API Hatası:</strong> ' . esc_html($response->get_error_message()) . '</p>';
+            } else {
+                $release_data = json_decode(wp_remote_retrieve_body($response), true);
+                if (!empty($release_data['tag_name'])) {
+                    echo '<p><strong>✅ Son Release:</strong> ' . esc_html($release_data['tag_name']) . '</p>';
+                    echo '<p><strong>Release URL:</strong> <a href="' . esc_url($release_data['html_url']) . '" target="_blank">' . esc_html($release_data['html_url']) . '</a></p>';
+                    echo '<p><strong>Mevcut Versiyon:</strong> ' . esc_html($current_version) . '</p>';
+                    $release_version = preg_replace('/^v/', '', $release_data['tag_name']);
+                    echo '<p><strong>Karşılaştırma:</strong> ' . esc_html($current_version) . ' vs ' . esc_html($release_version) . '</p>';
+                    if (version_compare($current_version, $release_version, '<')) {
+                        echo '<p style="color: #d63638;"><strong>⚠️ Güncelleme mevcut olmalı!</strong></p>';
+                    } else {
+                        echo '<p style="color: #00a32a;"><strong>ℹ️ Versiyonlar aynı veya mevcut versiyon daha yeni.</strong></p>';
+                        echo '<p><small>GitHub\'da yeni bir release oluşturup versiyon numarasını artırmanız gerekebilir (örn: 1.0.1, 1.1.0, 2.0.0)</small></p>';
+                    }
+                } else {
+                    echo '<p><strong>⚠️ Release bulunamadı!</strong> GitHub\'da release oluşturmanız gerekiyor.</p>';
+                    echo '<p><small>Branch kontrolü yapılıyor...</small></p>';
+                    
+                    // Branch kontrolü
+                    $branch_url = sprintf('https://api.github.com/repos/%s/%s/commits/%s', $github_username, $github_repo, $github_branch);
+                    $branch_response = wp_remote_get($branch_url, array(
+                        'timeout' => 15,
+                        'headers' => array('Accept' => 'application/vnd.github.v3+json', 'User-Agent' => 'WordPress-GSP-Connector'),
+                        'sslverify' => true
+                    ));
+                    
+                    if (!is_wp_error($branch_response)) {
+                        $commit_data = json_decode(wp_remote_retrieve_body($branch_response), true);
+                        if (!empty($commit_data['sha'])) {
+                            echo '<p><strong>Branch:</strong> ' . esc_html($github_branch) . '</p>';
+                            echo '<p><strong>Son Commit:</strong> ' . esc_html(substr($commit_data['sha'], 0, 7)) . '</p>';
+                            echo '<p><strong>Commit Mesajı:</strong> ' . esc_html($commit_data['commit']['message'] ?? 'N/A') . '</p>';
+                        }
+                    }
+                }
+            }
+            echo '</div>';
+        }
+    }
+    
     // Örnek API Key (güvenlik için gerçek key değil, sadece format örneği)
     $example_key = 'gsp_' . wp_generate_password(60, false);
     ?>
@@ -1083,6 +1139,13 @@ function gsp_connector_settings_content() {
                     <input type="hidden" name="clear_update_cache" value="1">
                     <button type="submit" class="button button-secondary" onclick="return confirm('Güncelleme cache\'i temizlenecek. Devam etmek istiyor musunuz?');">🗑️ Güncelleme Cache\'ini Temizle</button>
                 </form>
+                <?php if (!empty($github_username) && !empty($github_repo)): ?>
+                <form method="post" action="" style="margin-top: 15px; display: inline-block; margin-left: 10px;">
+                    <?php wp_nonce_field('debug_github'); ?>
+                    <input type="hidden" name="debug_github" value="1">
+                    <button type="submit" class="button button-secondary">🔍 GitHub Debug</button>
+                </form>
+                <?php endif; ?>
                 <small style="margin-left: 10px; color: #646970; display: block; margin-top: 10px;">Son kontrol: <?php echo date('d.m.Y H:i'); ?></small>
             <?php endif; ?>
         </div>

@@ -132,7 +132,24 @@ class GitHub_Plugin_Updater {
             return $this->get_latest_from_branch();
         }
         
+        $response_code = wp_remote_retrieve_response_code($response);
+        
+        // 404 = Release yok, branch'ten kontrol et
+        if ($response_code === 404) {
+            return $this->get_latest_from_branch();
+        }
+        
+        // Diğer hata kodları
+        if ($response_code !== 200) {
+            return false;
+        }
+        
         $release_data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        // API rate limit veya geçersiz yanıt
+        if (empty($release_data) || isset($release_data['message'])) {
+            return false;
+        }
         
         if (!empty($release_data['tag_name'])) {
             $version = $this->clean_version($release_data['tag_name']);

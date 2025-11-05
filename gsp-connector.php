@@ -153,6 +153,13 @@ function gsp_register_routes() {
         'callback'            => 'gsp_test_connection',
         'permission_callback' => 'gsp_validate_api_key',
     ));
+
+    // Aktif sayfalar listesi (GET)
+    register_rest_route( 'gsp/v1', '/pages', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_active_pages',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
 }
 
 // 2. Güvenlik ve API Key Doğrulama Fonksiyonu
@@ -635,7 +642,66 @@ function gsp_test_connection( WP_REST_Request $request ) {
     ), 200);
 }
 
-// 13. Google Sheets API ile Import Fonksiyonu
+// 13. Aktif Sayfalar Listesi Fonksiyonu
+function gsp_get_active_pages( WP_REST_Request $request ) {
+    $params = $request->get_query_params();
+    $per_page = isset($params['per_page']) ? min(intval($params['per_page']), 100) : -1; // -1 = tümü
+    $page = isset($params['page']) ? max(1, intval($params['page'])) : 1;
+    $search = isset($params['search']) ? sanitize_text_field($params['search']) : '';
+    
+    // Aktif (published) sayfaları getir
+    $args = array(
+        'post_type'      => 'page',
+        'post_status'    => 'publish', // Sadece yayınlanmış sayfalar
+        'posts_per_page' => $per_page,
+        'paged'          => $page,
+        'orderby'        => 'title',
+        'order'          => 'ASC',
+    );
+    
+    if (!empty($search)) {
+        $args['s'] = $search;
+    }
+    
+    $query = new WP_Query($args);
+    $pages = array();
+    
+    if ($query->have_posts()) {
+        while ($query->have_posts()) {
+            $query->the_post();
+            $page_id = get_the_ID();
+            $page_url = get_permalink($page_id);
+            
+            $pages[] = array(
+                'id'         => $page_id,
+                'title'      => get_the_title(),
+                'url'        => $page_url,
+                'slug'       => get_post_field('post_name', $page_id),
+                'date'       => get_the_date('Y-m-d H:i:s'),
+                'modified'   => get_the_modified_date('Y-m-d H:i:s'),
+                'author'     => get_the_author(),
+            );
+        }
+        wp_reset_postdata();
+    }
+    
+    // URL'leri ayrı bir array olarak da ekle (kullanıcı istedi)
+    $urls = array();
+    foreach ($pages as $page_data) {
+        $urls[] = $page_data['url'];
+    }
+    
+    return new WP_REST_Response(array(
+        'total_pages' => $query->found_posts,
+        'count'       => count($pages),
+        'page'        => $page,
+        'per_page'    => $per_page,
+        'pages'       => $pages,
+        'urls'        => $urls, // URL'ler ayrı array olarak
+    ), 200);
+}
+
+// 14. Google Sheets API ile Import Fonksiyonu
 function gsp_import_from_google_sheets( WP_REST_Request $request ) {
     $data = $request->get_json_params();
     
@@ -1199,6 +1265,11 @@ function gsp_connector_settings_content() {
                     <td><code>/test</code></td>
                     <td><strong>Bağlantı testi</strong> - API'nin çalışıp çalışmadığını kontrol eder</td>
                 </tr>
+                <tr style="background-color: #e8f5e9;">
+                    <td><code>GET</code></td>
+                    <td><code>/pages</code></td>
+                    <td><strong>Aktif sayfalar listesi</strong> - Yayınlanmış tüm sayfaları ve URL'lerini döndürür (?per_page=20&page=1&search=...)</td>
+                </tr>
             </tbody>
         </table>
         
@@ -1368,6 +1439,50 @@ Body (raw JSON):
       "regular_price": "200",
       "stock_quantity": 50
     }
+  ]
+}</code></pre>
+            
+            <h4>7. Aktif Sayfalar Listesi (GET)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+URL: <?php echo esc_html($api_base_url); ?>pages
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+
+Query Parameters (Opsiyonel):
+  ?per_page=20    - Sayfa başına kayıt sayısı (varsayılan: tümü)
+  ?page=1         - Sayfa numarası
+  ?search=test    - Arama terimi</code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "total_pages": 15,
+  "count": 15,
+  "page": 1,
+  "per_page": -1,
+  "pages": [
+    {
+      "id": 123,
+      "title": "Ana Sayfa",
+      "url": "https://example.com/",
+      "slug": "ana-sayfa",
+      "date": "2025-01-15 10:30:00",
+      "modified": "2025-01-20 14:20:00",
+      "author": "Admin"
+    },
+    {
+      "id": 124,
+      "title": "Hakkımızda",
+      "url": "https://example.com/hakkimizda",
+      "slug": "hakkimizda",
+      "date": "2025-01-16 11:00:00",
+      "modified": "2025-01-18 09:15:00",
+      "author": "Admin"
+    }
+  ],
+  "urls": [
+    "https://example.com/",
+    "https://example.com/hakkimizda",
+    "https://example.com/iletisim"
   ]
 }</code></pre>
             

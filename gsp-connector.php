@@ -813,6 +813,76 @@ function gsp_import_from_google_sheets( WP_REST_Request $request ) {
     ), 200);
 }
 
+// GitHub versiyon kontrolü yardımcı fonksiyonu
+function gsp_check_github_version($username, $repo, $branch = 'main') {
+    $cache_key = 'gsp_github_version_check_' . md5($username . $repo);
+    $cached = get_transient($cache_key);
+    
+    if ($cached !== false) {
+        return $cached;
+    }
+    
+    // Önce releases API'yi dene
+    $releases_url = sprintf(
+        'https://api.github.com/repos/%s/%s/releases/latest',
+        $username,
+        $repo
+    );
+    
+    $response = wp_remote_get($releases_url, array(
+        'timeout' => 10,
+        'headers' => array(
+            'Accept' => 'application/vnd.github.v3+json',
+            'User-Agent' => 'WordPress-GSP-Connector'
+        ),
+        'sslverify' => true
+    ));
+    
+    if (!is_wp_error($response)) {
+        $release_data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!empty($release_data['tag_name'])) {
+            $version = preg_replace('/^v/', '', $release_data['tag_name']);
+            // Cache'e kaydet (1 saat)
+            set_transient($cache_key, $version, HOUR_IN_SECONDS);
+            return $version;
+        }
+    }
+    
+    // Release bulunamazsa branch'ten commit SHA'sını al
+    $branch_url = sprintf(
+        'https://api.github.com/repos/%s/%s/commits/%s',
+        $username,
+        $repo,
+        $branch
+    );
+    
+    $response = wp_remote_get($branch_url, array(
+        'timeout' => 10,
+        'headers' => array(
+            'Accept' => 'application/vnd.github.v3+json',
+            'User-Agent' => 'WordPress-GSP-Connector'
+        ),
+        'sslverify' => true
+    ));
+    
+    if (!is_wp_error($response)) {
+        $commit_data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!empty($commit_data['sha'])) {
+            // Plugin header'dan mevcut versiyonu al
+            $plugin_data = get_file_data(__FILE__, array('Version' => 'Version'));
+            $current_version = $plugin_data['Version'];
+            $version = $current_version . '-' . substr($commit_data['sha'], 0, 7);
+            // Cache'e kaydet (30 dakika - branch değişebilir)
+            set_transient($cache_key, $version, 30 * MINUTE_IN_SECONDS);
+            return $version;
+        }
+    }
+    
+    return null;
+}
+
 // 4. Ayarlar Sayfası: Adminin API Secret Key'i panelle girmesi için
 add_action('admin_menu', 'gsp_connector_settings_page');
 
@@ -845,6 +915,20 @@ function gsp_connector_settings_content() {
     $github_repo = get_option('gsp_github_repo', '');
     $github_branch = get_option('gsp_github_branch', 'main');
     
+    // Plugin versiyon bilgisini al
+    $plugin_data = get_file_data(__FILE__, array('Version' => 'Version'));
+    $current_version = $plugin_data['Version'];
+    
+    // GitHub'dan versiyon kontrolü (eğer bilgiler varsa)
+    $latest_version = null;
+    $update_available = false;
+    if (!empty($github_username) && !empty($github_repo)) {
+        $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch);
+        if ($latest_version && version_compare($current_version, $latest_version, '<')) {
+            $update_available = true;
+        }
+    }
+    
     // Yeni key oluşturma (AJAX)
     if (isset($_POST['generate_new_key']) && wp_verify_nonce($_POST['_wpnonce'], 'generate_api_key')) {
         $new_key = wp_generate_password(64, false);
@@ -853,11 +937,63 @@ function gsp_connector_settings_content() {
         echo '<div class="notice notice-success is-dismissible"><p>Yeni API Key oluşturuldu!</p></div>';
     }
     
+    // Versiyon kontrolü manuel tetikleme
+    if (isset($_POST['check_version']) && wp_verify_nonce($_POST['_wpnonce'], 'check_version')) {
+        if (!empty($github_username) && !empty($github_repo)) {
+            // Cache'i temizle
+            delete_transient('gsp_github_version_check_' . md5($github_username . $github_repo));
+            $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch);
+            if ($latest_version && version_compare($current_version, $latest_version, '<')) {
+                $update_available = true;
+                echo '<div class="notice notice-info is-dismissible"><p>Yeni versiyon mevcut: <strong>' . esc_html($latest_version) . '</strong></p></div>';
+            } else {
+                echo '<div class="notice notice-success is-dismissible"><p>Eklentiniz güncel! Mevcut versiyon: <strong>' . esc_html($current_version) . '</strong></p></div>';
+            }
+        }
+    }
+    
     // Örnek API Key (güvenlik için gerçek key değil, sadece format örneği)
     $example_key = 'gsp_' . wp_generate_password(60, false);
     ?>
     <div class="wrap">
         <h1>GSP Connector Ayarları</h1>
+        
+        <!-- Versiyon Bilgisi -->
+        <div style="background: #f0f0f1; padding: 15px; border-left: 4px solid #2271b1; margin-bottom: 20px;">
+            <h2 style="margin-top: 0;">Versiyon Bilgisi</h2>
+            <table style="width: 100%;">
+                <tr>
+                    <td style="width: 200px; padding: 8px 0;"><strong>Mevcut Versiyon:</strong></td>
+                    <td style="padding: 8px 0;">
+                        <code style="font-size: 16px; background: #fff; padding: 5px 10px; border-radius: 3px;"><?php echo esc_html($current_version); ?></code>
+                    </td>
+                </tr>
+                <?php if ($latest_version): ?>
+                    <tr>
+                        <td style="padding: 8px 0;"><strong>GitHub'daki En Son Versiyon:</strong></td>
+                        <td style="padding: 8px 0;">
+                            <code style="font-size: 16px; background: #fff; padding: 5px 10px; border-radius: 3px; <?php echo $update_available ? 'color: #d63638;' : 'color: #00a32a;'; ?>">
+                                <?php echo esc_html($latest_version); ?>
+                            </code>
+                            <?php if ($update_available): ?>
+                                <span style="margin-left: 10px; color: #d63638; font-weight: bold;">⚠️ Güncelleme Mevcut!</span>
+                            <?php else: ?>
+                                <span style="margin-left: 10px; color: #00a32a; font-weight: bold;">✅ Güncel</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                <?php endif; ?>
+            </table>
+            <?php if (!empty($github_username) && !empty($github_repo)): ?>
+                <form method="post" action="" style="margin-top: 15px;">
+                    <?php wp_nonce_field('check_version'); ?>
+                    <input type="hidden" name="check_version" value="1">
+                    <button type="submit" class="button button-secondary">🔄 Versiyonu Kontrol Et</button>
+                    <small style="margin-left: 10px; color: #646970;">Son kontrol: <?php echo date('d.m.Y H:i'); ?></small>
+                </form>
+            <?php endif; ?>
+        </div>
+        
         <form method="post" action="">
             <?php wp_nonce_field('generate_api_key'); ?>
             <input type="hidden" name="generate_new_key" value="1">
@@ -917,7 +1053,17 @@ function gsp_connector_settings_content() {
                         <?php if (!empty($github_username) && !empty($github_repo)): ?>
                             <div style="background: #e8f5e9; padding: 10px; border-left: 4px solid #4caf50; margin-top: 10px;">
                                 <strong>✅ GitHub Güncelleyici Aktif!</strong><br>
-                                <small>Güncelleme kontrolü: <code><?php echo esc_html($github_username); ?>/<?php echo esc_html($github_repo); ?></code> (<?php echo esc_html($github_branch); ?> dalı)</small>
+                                <small>
+                                    Güncelleme kontrolü: <code><?php echo esc_html($github_username); ?>/<?php echo esc_html($github_repo); ?></code> (<?php echo esc_html($github_branch); ?> dalı)
+                                    <?php if ($latest_version): ?>
+                                        <br>En son versiyon: <strong><?php echo esc_html($latest_version); ?></strong>
+                                        <?php if ($update_available): ?>
+                                            <span style="color: #d63638;">⚠️ Güncelleme mevcut!</span>
+                                        <?php else: ?>
+                                            <span style="color: #00a32a;">✅ Güncel</span>
+                                        <?php endif; ?>
+                                    <?php endif; ?>
+                                </small>
                             </div>
                         <?php else: ?>
                             <div style="background: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; margin-top: 10px;">

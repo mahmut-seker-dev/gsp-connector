@@ -50,6 +50,7 @@ class GitHub_Plugin_Updater {
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
         add_filter('plugins_api', array($this, 'plugin_api_call'), 10, 3);
         add_filter('upgrader_post_install', array($this, 'post_install'), 10, 3);
+        add_filter('upgrader_source_selection', array($this, 'upgrader_source_selection'), 10, 4);
         
         // Admin bildirimleri
         add_action('admin_notices', array($this, 'admin_notice'));
@@ -299,6 +300,55 @@ class GitHub_Plugin_Updater {
         );
         
         return $result;
+    }
+    
+    /**
+     * ZIP dosyası açıldığında kaynak klasörü düzeltir
+     * GitHub ZIP'i genellikle username-repo-tag şeklinde bir klasör içerir
+     * 
+     * @param string $source Kaynak klasör yolu
+     * @param string $remote_source Uzaktan kaynak
+     * @param object $upgrader Upgrader objesi
+     * @param array $hook_extra Ek bilgiler
+     * @return string Düzeltilmiş kaynak yolu
+     */
+    public function upgrader_source_selection($source, $remote_source, $upgrader, $hook_extra) {
+        // Sadece bu eklenti için çalış
+        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_file) {
+            return $source;
+        }
+        
+        // Kaynak klasörü kontrol et
+        if (!is_dir($source)) {
+            return $source;
+        }
+        
+        // GitHub ZIP'i genellikle username-repo-tag şeklinde bir klasör içerir
+        // Bu klasörü bul ve içeriğini doğrudan kaynak olarak kullan
+        $files = @scandir($source);
+        
+        if ($files) {
+            foreach ($files as $file) {
+                if ($file === '.' || $file === '..') {
+                    continue;
+                }
+                
+                $nested_path = trailingslashit($source) . $file;
+                
+                // Eğer bu bir klasör ise ve içinde plugin dosyası varsa
+                if (is_dir($nested_path)) {
+                    $plugin_file_name = basename($this->plugin_file);
+                    $nested_plugin_file = trailingslashit($nested_path) . $plugin_file_name;
+                    
+                    if (file_exists($nested_plugin_file)) {
+                        // Bu doğru klasör, bunu kaynak olarak kullan
+                        return $nested_path;
+                    }
+                }
+            }
+        }
+        
+        return $source;
     }
     
     /**

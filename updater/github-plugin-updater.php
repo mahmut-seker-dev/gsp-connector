@@ -69,9 +69,9 @@ class GitHub_Plugin_Updater {
         
         // Cache kontrolü
         $cached = get_transient($this->cache_key);
-        if ($cached !== false) {
-            if ($cached['new_version'] && version_compare($this->current_version, $cached['version'], '<')) {
-                $transient->response[$this->plugin_file] = $cached;
+        if ($cached !== false && is_array($cached)) {
+            if (!empty($cached['new_version']) && $this->is_newer_version($this->current_version, $cached['version'])) {
+                $transient->response[$this->plugin_file] = (object) $cached;
             }
             return $transient;
         }
@@ -79,7 +79,8 @@ class GitHub_Plugin_Updater {
         // GitHub API'den güncelleme bilgisi al
         $release_info = $this->get_latest_release();
         
-        if ($release_info && version_compare($this->current_version, $release_info['version'], '<')) {
+        // Versiyon karşılaştırması (commit SHA'sını ignore et)
+        if ($release_info && $this->is_newer_version($this->current_version, $release_info['version'])) {
             $update_data = array(
                 'slug' => $this->plugin_slug,
                 'plugin' => $this->plugin_file,
@@ -209,6 +210,35 @@ class GitHub_Plugin_Updater {
     }
     
     /**
+     * Versiyon karşılaştırması yapar (commit SHA'sını ignore eder)
+     * 
+     * @param string $current_version Mevcut versiyon
+     * @param string $remote_version GitHub'daki versiyon
+     * @return bool Yeni versiyon varsa true
+     */
+    private function is_newer_version($current_version, $remote_version) {
+        // Commit SHA'sını kaldır (tire sonrası kısmı)
+        $current_base = preg_replace('/-[a-f0-9]+$/', '', $current_version);
+        $remote_base = preg_replace('/-[a-f0-9]+$/', '', $remote_version);
+        
+        // Base versiyonları karşılaştır
+        $base_compare = version_compare($current_base, $remote_base);
+        
+        // Eğer base versiyonlar aynıysa, commit SHA'sı olan versiyon daha yeni sayılır (sadece branch'ten geldiğinde)
+        if ($base_compare === 0) {
+            // Eğer mevcut versiyonda SHA yok ama remote'da varsa, bu branch'ten geliyor demektir - güncelleme yok
+            if (strpos($current_version, '-') === false && strpos($remote_version, '-') !== false) {
+                return false; // Branch'ten gelen versiyon, release değil - güncelleme yok
+            }
+            // İkisinde de SHA varsa, sadece base versiyonları farklıysa güncelleme var
+            return false;
+        }
+        
+        // Base versiyonlar farklıysa, normal karşılaştırma
+        return $base_compare < 0;
+    }
+    
+    /**
      * Plugin API çağrısı (WordPress güncelleme sayfası için)
      * 
      * @param mixed $result
@@ -270,6 +300,9 @@ class GitHub_Plugin_Updater {
         // Cache'i temizle
         delete_transient($this->cache_key);
         
+        // WordPress güncelleme cache'ini de temizle
+        delete_site_transient('update_plugins');
+        
         return $response;
     }
     
@@ -287,10 +320,10 @@ class GitHub_Plugin_Updater {
         if (!$update_data || empty($update_data['new_version'])) {
             // Cache yoksa kontrol et
             $release_info = $this->get_latest_release();
-            if ($release_info && version_compare($this->current_version, $release_info['version'], '<')) {
+            if ($release_info && $this->is_newer_version($this->current_version, $release_info['version'])) {
                 $this->show_update_notice($release_info);
             }
-        } elseif ($update_data['new_version'] && version_compare($this->current_version, $update_data['version'], '<')) {
+        } elseif (!empty($update_data['new_version']) && is_array($update_data) && $this->is_newer_version($this->current_version, $update_data['version'])) {
             $this->show_update_notice($update_data);
         }
     }

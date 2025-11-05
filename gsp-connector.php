@@ -952,6 +952,28 @@ function gsp_connector_settings_content() {
         }
     }
     
+    // Güncelleme cache'ini temizleme
+    if (isset($_POST['clear_update_cache']) && wp_verify_nonce($_POST['_wpnonce'], 'clear_update_cache')) {
+        // Tüm güncelleme cache'lerini temizle
+        $cache_keys = array(
+            'gsp_github_update_check_' . md5('gsp-connector'),
+            'gsp_github_version_check_' . md5($github_username . $github_repo),
+            'update_plugins', // WordPress genel güncelleme cache'i
+        );
+        
+        foreach ($cache_keys as $key) {
+            delete_transient($key);
+        }
+        
+        // Site transient'i de temizle
+        delete_site_transient('update_plugins');
+        
+        echo '<div class="notice notice-success is-dismissible"><p>✅ Güncelleme cache\'i temizlendi! Sayfayı yenileyin.</p></div>';
+        
+        // Sayfayı yenile (cache temizlendikten sonra)
+        echo '<script>setTimeout(function(){ window.location.reload(); }, 1000);</script>';
+    }
+    
     // Örnek API Key (güvenlik için gerçek key değil, sadece format örneği)
     $example_key = 'gsp_' . wp_generate_password(60, false);
     ?>
@@ -985,12 +1007,17 @@ function gsp_connector_settings_content() {
                 <?php endif; ?>
             </table>
             <?php if (!empty($github_username) && !empty($github_repo)): ?>
-                <form method="post" action="" style="margin-top: 15px;">
+                <form method="post" action="" style="margin-top: 15px; display: inline-block;">
                     <?php wp_nonce_field('check_version'); ?>
                     <input type="hidden" name="check_version" value="1">
                     <button type="submit" class="button button-secondary">🔄 Versiyonu Kontrol Et</button>
-                    <small style="margin-left: 10px; color: #646970;">Son kontrol: <?php echo date('d.m.Y H:i'); ?></small>
                 </form>
+                <form method="post" action="" style="margin-top: 15px; display: inline-block; margin-left: 10px;">
+                    <?php wp_nonce_field('clear_update_cache'); ?>
+                    <input type="hidden" name="clear_update_cache" value="1">
+                    <button type="submit" class="button button-secondary" onclick="return confirm('Güncelleme cache\'i temizlenecek. Devam etmek istiyor musunuz?');">🗑️ Güncelleme Cache\'ini Temizle</button>
+                </form>
+                <small style="margin-left: 10px; color: #646970; display: block; margin-top: 10px;">Son kontrol: <?php echo date('d.m.Y H:i'); ?></small>
             <?php endif; ?>
         </div>
         

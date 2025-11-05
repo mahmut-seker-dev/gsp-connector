@@ -1,0 +1,1292 @@
+<?php
+/*
+Plugin Name: GSP Connector
+Plugin URI: https://gsp.test
+Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
+Version: 1.0.0
+Author: Mahmut Şeker
+Author URI: https://mahmutseker.com
+*/
+
+// 1. GSP Secret Key'i veritabanından alalım.
+// Eklenti aktif edildiğinde bu ayar kaydedilmiş olmalıdır.
+// WordPress tamamen yüklendikten sonra çağrılmalı
+add_action('plugins_loaded', function() {
+    if (!defined('GSP_API_SECRET')) {
+        define('GSP_API_SECRET', get_option('gsp_api_secret_key', 'GSP_DEFAULT_SECRET'));
+    }
+}, 1);
+
+// WooCommerce'un yüklü olduğundan emin ol
+if ( ! in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', get_option( 'active_plugins' ) ) ) ) {
+    // WooCommerce aktif değilse, bir hata bildirimi göster.
+    add_action( 'admin_notices', function() {
+        echo '<div class="notice notice-error"><p>GSP Connector eklentisi, WooCommerce\'in aktif olmasını gerektirir.</p></div>';
+    });
+    return;
+}
+
+// =========================================================================
+// GITHUB OTOMATİK GÜNCELLEME MEKANİZMASI
+// =========================================================================
+
+// GitHub güncelleyici sınıfını dahil et
+add_action('plugins_loaded', function() {
+    $updater_file = plugin_dir_path(__FILE__) . 'updater/github-plugin-updater.php';
+    if (file_exists($updater_file)) {
+        require_once($updater_file);
+        
+        // GitHub repo bilgilerini ayarlardan al
+        $github_username = get_option('gsp_github_username', '');
+        $github_repo = get_option('gsp_github_repo', '');
+        $github_branch = get_option('gsp_github_branch', 'main');
+        
+        // Eğer GitHub bilgileri girilmişse, updater'ı başlat
+        if (!empty($github_username) && !empty($github_repo)) {
+            new GitHub_Plugin_Updater(
+                __FILE__, // Eklenti dosya yolu
+                $github_username, // GitHub Kullanıcı Adı
+                $github_repo, // GitHub Depo Adı
+                $github_branch // Ana Dal Adı
+            );
+        }
+    }
+}, 2);
+
+// REST API endpoint'ini kaydetme fonksiyonunu çağırma
+add_action( 'rest_api_init', 'gsp_register_routes' );
+
+/**
+ * REST API Endpoint'lerini kaydeder.
+ */
+function gsp_register_routes() {
+    // Ürün listesi (GET)
+    register_rest_route( 'gsp/v1', '/products', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_products',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Ürün detayı (GET)
+    register_rest_route( 'gsp/v1', '/products/(?P<id>\d+)', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_product',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
+
+    // Ürün oluşturma (POST)
+    register_rest_route( 'gsp/v1', '/products', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_create_product',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Ürün güncelleme (PUT)
+    register_rest_route( 'gsp/v1', '/products/(?P<id>\d+)', array(
+        'methods'             => 'PUT',
+        'callback'            => 'gsp_update_product',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
+
+    // Ürün silme (DELETE)
+    register_rest_route( 'gsp/v1', '/products/(?P<id>\d+)', array(
+        'methods'             => 'DELETE',
+        'callback'            => 'gsp_delete_product',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
+
+    // Stok güncelleme (POST)
+    register_rest_route( 'gsp/v1', '/products/(?P<id>\d+)/stock', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_update_stock',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
+
+    // Fiyat güncelleme (POST) - Mevcut endpoint
+    register_rest_route( 'gsp/v1', '/sync-product-price', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_sync_product_price',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Google Sheets CSV/JSON Toplu Import (POST)
+    register_rest_route( 'gsp/v1', '/products/bulk-import', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_bulk_import_products',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Google Sheets API ile doğrudan çekme (POST)
+    register_rest_route( 'gsp/v1', '/products/import-from-sheets', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_import_from_google_sheets',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Test endpoint'i (bağlantı testi için)
+    register_rest_route( 'gsp/v1', '/test', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_test_connection',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+}
+
+// 2. Güvenlik ve API Key Doğrulama Fonksiyonu
+function gsp_validate_api_key() {
+    // Rate limiting kontrolü
+    $ip = gsp_get_client_ip();
+    $rate_limit_key = 'gsp_rate_limit_' . md5($ip);
+    $rate_limit_count = get_transient($rate_limit_key);
+    
+    // Dakikada maksimum 60 istek (rate limiting)
+    if ($rate_limit_count && $rate_limit_count >= 60) {
+        return new WP_Error( 'gsp_rate_limit', 'Çok fazla istek. Lütfen bir dakika bekleyin.', array( 'status' => 429 ) );
+    }
+    
+    // Rate limit sayacını artır
+    if ($rate_limit_count) {
+        set_transient($rate_limit_key, $rate_limit_count + 1, 60); // 60 saniye
+    } else {
+        set_transient($rate_limit_key, 1, 60);
+    }
+
+    // Laravel'den gelen HTTP başlığı (X-GSP-API-KEY)
+    $incoming_key = isset( $_SERVER['HTTP_X_GSP_API_KEY'] ) ? sanitize_text_field($_SERVER['HTTP_X_GSP_API_KEY']) : '';
+
+    // Eklenti ayarlarından GSP_API_SECRET tanımlanmış mı kontrol et.
+    if ( ! defined('GSP_API_SECRET') || GSP_API_SECRET === 'GSP_DEFAULT_SECRET' ) {
+        return new WP_Error( 'gsp_not_configured', 'GSP Connector ayarlanmamış. API Key gereklidir.', array( 'status' => 401 ) );
+    }
+
+    // Timing attack koruması için hash_equals kullan
+    if ( hash_equals( (string) GSP_API_SECRET, $incoming_key ) ) {
+        return true; 
+    }
+    
+    // Şüpheli aktiviteyi logla (opsiyonel)
+    if (defined('WP_DEBUG') && WP_DEBUG) {
+        error_log('GSP Connector: Geçersiz API key denemesi - IP: ' . $ip);
+    }
+    
+    // Yetkilendirme başarısız
+    return new WP_Error( 'gsp_invalid_key', 'Geçersiz GSP API Anahtarı.', array( 'status' => 401 ) );
+}
+
+// Client IP adresini güvenli şekilde al
+function gsp_get_client_ip() {
+    $ip_keys = array(
+        'HTTP_CF_CONNECTING_IP', // Cloudflare
+        'HTTP_X_REAL_IP',        // Nginx
+        'HTTP_X_FORWARDED_FOR',  // Proxy
+        'REMOTE_ADDR'            // Standart
+    );
+    
+    foreach ($ip_keys as $key) {
+        if (!empty($_SERVER[$key])) {
+            $ip = sanitize_text_field($_SERVER[$key]);
+            // X-Forwarded-For birden fazla IP içerebilir
+            if (strpos($ip, ',') !== false) {
+                $ip = trim(explode(',', $ip)[0]);
+            }
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return $ip;
+            }
+        }
+    }
+    
+    return isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field($_SERVER['REMOTE_ADDR']) : '0.0.0.0';
+}
+
+// 3. Ürün Listesi Fonksiyonu
+function gsp_get_products( WP_REST_Request $request ) {
+    $params = $request->get_query_params();
+    $per_page = isset($params['per_page']) ? min(intval($params['per_page']), 100) : 20; // Maksimum 100
+    $page = isset($params['page']) ? max(1, intval($params['page'])) : 1; // Minimum 1
+    $search = isset($params['search']) ? sanitize_text_field($params['search']) : '';
+    $status = isset($params['status']) ? sanitize_text_field($params['status']) : 'any';
+    
+    // Status whitelist kontrolü
+    $allowed_statuses = array('publish', 'draft', 'pending', 'private', 'any');
+    if (!in_array($status, $allowed_statuses)) {
+        $status = 'any';
+    }
+
+    $args = array(
+        'post_type'      => 'product',
+        'posts_per_page' => $per_page,
+        'paged'          => $page,
+        'post_status'    => $status,
+    );
+
+    if (!empty($search)) {
+        $args['s'] = $search;
+    }
+
+    $query = new WP_Query($args);
+    $products = array();
+
+    if ($query->have_posts()) {
+        while ($query->have_posts()) {
+            $query->the_post();
+            $product = wc_get_product(get_the_ID());
+            if ($product) {
+                $products[] = gsp_format_product($product);
+            }
+        }
+        wp_reset_postdata();
+    }
+
+    return new WP_REST_Response(array(
+        'products' => $products,
+        'total'    => $query->found_posts,
+        'page'     => $page,
+        'per_page' => $per_page,
+    ), 200);
+}
+
+// 4. Ürün Detayı Fonksiyonu
+function gsp_get_product( WP_REST_Request $request ) {
+    $product_id = intval($request['id']);
+    $product = wc_get_product($product_id);
+
+    if (!$product) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün bulunamadı.',
+        ), 404);
+    }
+
+    return new WP_REST_Response(gsp_format_product($product), 200);
+}
+
+// 5. Ürün Oluşturma Fonksiyonu
+function gsp_create_product( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+
+    // Zorunlu alanlar
+    if (empty($data['name'])) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün adı zorunludur.',
+        ), 400);
+    }
+
+    $product = new WC_Product_Simple();
+    $product->set_name(sanitize_text_field($data['name']));
+    $product->set_status(isset($data['status']) ? sanitize_text_field($data['status']) : 'publish');
+    
+    if (!empty($data['sku'])) {
+        $product->set_sku(sanitize_text_field($data['sku']));
+    }
+    
+    if (isset($data['regular_price'])) {
+        $product->set_regular_price(floatval($data['regular_price']));
+    }
+    
+    if (isset($data['sale_price'])) {
+        $product->set_sale_price(floatval($data['sale_price']));
+    }
+    
+    if (isset($data['stock_quantity'])) {
+        $product->set_stock_quantity(intval($data['stock_quantity']));
+        $product->set_manage_stock(true);
+    }
+    
+    if (!empty($data['description'])) {
+        $product->set_description(wp_kses_post($data['description']));
+    }
+    
+    if (!empty($data['short_description'])) {
+        $product->set_short_description(wp_kses_post($data['short_description']));
+    }
+
+    $product_id = $product->save();
+
+    if (is_wp_error($product_id)) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün oluşturulurken hata oluştu: ' . $product_id->get_error_message(),
+        ), 500);
+    }
+
+    return new WP_REST_Response(array(
+        'message' => 'Ürün başarıyla oluşturuldu.',
+        'product' => gsp_format_product(wc_get_product($product_id)),
+    ), 201);
+}
+
+// 6. Ürün Güncelleme Fonksiyonu
+function gsp_update_product( WP_REST_Request $request ) {
+    $product_id = intval($request['id']);
+    $product = wc_get_product($product_id);
+
+    if (!$product) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün bulunamadı.',
+        ), 404);
+    }
+
+    $data = $request->get_json_params();
+
+    if (isset($data['name'])) {
+        $product->set_name(sanitize_text_field($data['name']));
+    }
+    
+    if (isset($data['status'])) {
+        $product->set_status(sanitize_text_field($data['status']));
+    }
+    
+    if (isset($data['sku'])) {
+        $product->set_sku(sanitize_text_field($data['sku']));
+    }
+    
+    if (isset($data['regular_price'])) {
+        $product->set_regular_price(floatval($data['regular_price']));
+    }
+    
+    if (isset($data['sale_price'])) {
+        $product->set_sale_price(floatval($data['sale_price']));
+    }
+    
+    if (isset($data['stock_quantity'])) {
+        $product->set_stock_quantity(intval($data['stock_quantity']));
+        $product->set_manage_stock(true);
+    }
+    
+    if (isset($data['description'])) {
+        $product->set_description(wp_kses_post($data['description']));
+    }
+    
+    if (isset($data['short_description'])) {
+        $product->set_short_description(wp_kses_post($data['short_description']));
+    }
+
+    $result = $product->save();
+
+    if (is_wp_error($result)) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün güncellenirken hata oluştu: ' . $result->get_error_message(),
+        ), 500);
+    }
+
+    return new WP_REST_Response(array(
+        'message' => 'Ürün başarıyla güncellendi.',
+        'product' => gsp_format_product($product),
+    ), 200);
+}
+
+// 7. Ürün Silme Fonksiyonu
+function gsp_delete_product( WP_REST_Request $request ) {
+    $product_id = intval($request['id']);
+    $product = wc_get_product($product_id);
+
+    if (!$product) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün bulunamadı.',
+        ), 404);
+    }
+
+    // Kalıcı silme yerine çöp kutusuna taşı
+    $force = isset($request['force']) && $request['force'] === true;
+    
+    if ($force) {
+        $result = wp_delete_post($product_id, true);
+    } else {
+        $result = wp_trash_post($product_id);
+    }
+
+    if (!$result) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün silinirken hata oluştu.',
+        ), 500);
+    }
+
+    return new WP_REST_Response(array(
+        'message' => $force ? 'Ürün kalıcı olarak silindi.' : 'Ürün çöp kutusuna taşındı.',
+        'id'      => $product_id,
+    ), 200);
+}
+
+// 8. Stok Güncelleme Fonksiyonu
+function gsp_update_stock( WP_REST_Request $request ) {
+    $product_id = intval($request['id']);
+    $product = wc_get_product($product_id);
+
+    if (!$product) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün bulunamadı.',
+        ), 404);
+    }
+
+    $data = $request->get_json_params();
+    
+    if (!isset($data['quantity'])) {
+        return new WP_REST_Response(array(
+            'message' => 'Stok miktarı (quantity) gereklidir.',
+        ), 400);
+    }
+
+    $quantity = intval($data['quantity']);
+    $product->set_stock_quantity($quantity);
+    $product->set_manage_stock(true);
+    $product->save();
+
+    return new WP_REST_Response(array(
+        'message'  => "Ürün stoku $quantity olarak güncellendi.",
+        'product'  => gsp_format_product($product),
+        'stock'    => $quantity,
+    ), 200);
+}
+
+// 9. Ürün Formatlama Yardımcı Fonksiyonu
+function gsp_format_product( $product ) {
+    if (!$product) {
+        return null;
+    }
+
+    return array(
+        'id'                => $product->get_id(),
+        'name'              => $product->get_name(),
+        'sku'               => $product->get_sku(),
+        'type'              => $product->get_type(),
+        'status'            => $product->get_status(),
+        'regular_price'     => $product->get_regular_price(),
+        'sale_price'        => $product->get_sale_price(),
+        'price'             => $product->get_price(),
+        'stock_quantity'    => $product->get_stock_quantity(),
+        'stock_status'      => $product->get_stock_status(),
+        'manage_stock'      => $product->get_manage_stock(),
+        'description'       => $product->get_description(),
+        'short_description' => $product->get_short_description(),
+        'permalink'         => $product->get_permalink(),
+        'image_url'         => wp_get_attachment_image_url($product->get_image_id(), 'full'),
+        'date_created'      => $product->get_date_created() ? $product->get_date_created()->date('Y-m-d H:i:s') : null,
+        'date_modified'     => $product->get_date_modified() ? $product->get_date_modified()->date('Y-m-d H:i:s') : null,
+    );
+}
+
+// 10. Ürün Fiyat Güncelleme Fonksiyonu (Mevcut)
+function gsp_sync_product_price( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    $sku = sanitize_text_field( $data['sku'] ?? '' );
+    $new_price = floatval( $data['new_price'] ?? 0 );
+    
+    if ( empty($sku) || $new_price <= 0 ) {
+        return new WP_REST_Response( array( 'message' => 'Eksik veya geçersiz SKU/Fiyat verisi.' ), 400 );
+    }
+
+    $product_id = wc_get_product_id_by_sku( $sku );
+
+    if ( !$product_id ) {
+        return new WP_REST_Response( array( 'message' => "SKU ($sku) ile ürün bulunamadı." ), 404 );
+    }
+
+    // Ürünü al
+    $product = wc_get_product( $product_id );
+    
+    // Fiyatları güncelle ve kaydet
+    $product->set_regular_price( $new_price );
+    $product->set_sale_price( $new_price ); 
+    
+    // Değişiklikleri kaydet
+    $product->save(); 
+
+    return new WP_REST_Response( array( 
+        'message' => "Ürün fiyatı $new_price olarak güncellendi.", 
+        'sku' => $sku, 
+        'new_price' => $new_price 
+    ), 200 );
+}
+
+// 11. Toplu Ürün Import Fonksiyonu (CSV/JSON formatında)
+function gsp_bulk_import_products( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    
+    if (empty($data['products']) || !is_array($data['products'])) {
+        return new WP_REST_Response(array(
+            'message' => 'Ürün listesi (products) gereklidir ve array formatında olmalıdır.',
+        ), 400);
+    }
+
+    // Güvenlik: Maksimum ürün sayısı limiti (DOS saldırılarını önlemek için)
+    $max_products = apply_filters('gsp_max_bulk_import', 500); // Varsayılan 500 ürün
+    if (count($data['products']) > $max_products) {
+        return new WP_REST_Response(array(
+            'message' => "Maksimum $max_products ürün gönderilebilir. Gönderilen: " . count($data['products']),
+        ), 400);
+    }
+
+    $results = array(
+        'success' => 0,
+        'failed' => 0,
+        'errors' => array(),
+        'updated' => array(),
+    );
+
+    foreach ($data['products'] as $index => $product_data) {
+        try {
+            // SKU veya ID ile ürünü bul
+            $product = null;
+            $product_id = null;
+
+            if (!empty($product_data['sku'])) {
+                $product_id = wc_get_product_id_by_sku(sanitize_text_field($product_data['sku']));
+            } elseif (!empty($product_data['id'])) {
+                $product_id = intval($product_data['id']);
+            }
+
+            if ($product_id) {
+                // Mevcut ürünü güncelle
+                $product = wc_get_product($product_id);
+            } else {
+                // Yeni ürün oluştur
+                if (empty($product_data['name'])) {
+                    $results['failed']++;
+                    $results['errors'][] = "Satır " . ($index + 1) . ": Ürün adı zorunludur.";
+                    continue;
+                }
+                $product = new WC_Product_Simple();
+                $product->set_name(sanitize_text_field($product_data['name']));
+            }
+
+            // Ürün bilgilerini güncelle
+            if (isset($product_data['name'])) {
+                $product->set_name(sanitize_text_field($product_data['name']));
+            }
+            if (isset($product_data['sku'])) {
+                $product->set_sku(sanitize_text_field($product_data['sku']));
+            }
+            if (isset($product_data['regular_price'])) {
+                $product->set_regular_price(floatval($product_data['regular_price']));
+            }
+            if (isset($product_data['sale_price'])) {
+                $product->set_sale_price(floatval($product_data['sale_price']));
+            }
+            if (isset($product_data['stock_quantity'])) {
+                $product->set_stock_quantity(intval($product_data['stock_quantity']));
+                $product->set_manage_stock(true);
+            }
+            if (isset($product_data['description'])) {
+                $product->set_description(wp_kses_post($product_data['description']));
+            }
+            if (isset($product_data['short_description'])) {
+                $product->set_short_description(wp_kses_post($product_data['short_description']));
+            }
+            if (isset($product_data['status'])) {
+                $product->set_status(sanitize_text_field($product_data['status']));
+            }
+
+            $saved = $product->save();
+            
+            if (is_wp_error($saved)) {
+                $results['failed']++;
+                $results['errors'][] = "Satır " . ($index + 1) . ": " . $saved->get_error_message();
+            } else {
+                $results['success']++;
+                $results['updated'][] = array(
+                    'id' => $product->get_id(),
+                    'sku' => $product->get_sku(),
+                    'name' => $product->get_name(),
+                );
+            }
+        } catch (Exception $e) {
+            $results['failed']++;
+            $results['errors'][] = "Satır " . ($index + 1) . ": " . $e->getMessage();
+        }
+    }
+
+    return new WP_REST_Response(array(
+        'message' => "İşlem tamamlandı. Başarılı: {$results['success']}, Başarısız: {$results['failed']}",
+        'results' => $results,
+    ), 200);
+}
+
+// 12. Test Bağlantısı Fonksiyonu
+function gsp_test_connection( WP_REST_Request $request ) {
+    $ip = gsp_get_client_ip();
+    return new WP_REST_Response(array(
+        'success' => true,
+        'message' => 'GSP Connector API çalışıyor!',
+        'timestamp' => current_time('mysql'),
+        'api_version' => '1.0.0',
+        'your_ip' => $ip,
+        'woocommerce_active' => class_exists('WooCommerce'),
+    ), 200);
+}
+
+// 13. Google Sheets API ile Import Fonksiyonu
+function gsp_import_from_google_sheets( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    
+    // Google Sheets CSV URL veya Sheet ID
+    $sheet_url = isset($data['sheet_url']) ? esc_url_raw($data['sheet_url']) : '';
+    $sheet_id = isset($data['sheet_id']) ? sanitize_text_field($data['sheet_id']) : '';
+    $range = isset($data['range']) ? sanitize_text_field($data['range']) : 'A1:Z1000';
+    
+    if (empty($sheet_url) && empty($sheet_id)) {
+        return new WP_REST_Response(array(
+            'message' => 'Google Sheets URL veya Sheet ID gereklidir.',
+            'example' => array(
+                'sheet_url' => 'https://docs.google.com/spreadsheets/d/SHEET_ID/export?format=csv&gid=0',
+                'sheet_id' => 'SHEET_ID',
+                'range' => 'A1:Z1000',
+            ),
+        ), 400);
+    }
+
+    // Sheet ID validasyonu (sadece alfanumerik, tire ve alt çizgi)
+    if (!empty($sheet_id)) {
+        if (!preg_match('/^[a-zA-Z0-9_-]+$/', $sheet_id)) {
+            return new WP_REST_Response(array(
+                'message' => 'Geçersiz Sheet ID formatı.',
+            ), 400);
+        }
+        // Sheet ID'den CSV URL oluştur
+        $csv_url = "https://docs.google.com/spreadsheets/d/{$sheet_id}/export?format=csv&gid=0";
+    } else {
+        // URL validasyonu - sadece Google Sheets domain'ine izin ver
+        $parsed_url = wp_parse_url($sheet_url);
+        if (!$parsed_url || !isset($parsed_url['host'])) {
+            return new WP_REST_Response(array(
+                'message' => 'Geçersiz URL formatı.',
+            ), 400);
+        }
+        
+        // Sadece Google Sheets domain'lerine izin ver
+        $allowed_domains = array('docs.google.com', 'drive.google.com');
+        $is_allowed = false;
+        foreach ($allowed_domains as $domain) {
+            if (strpos($parsed_url['host'], $domain) !== false) {
+                $is_allowed = true;
+                break;
+            }
+        }
+        
+        if (!$is_allowed) {
+            return new WP_REST_Response(array(
+                'message' => 'Sadece Google Sheets URL\'lerine izin verilir.',
+            ), 400);
+        }
+        
+        // URL'den CSV export linki oluştur
+        $csv_url = $sheet_url;
+        // Eğer normal sheet URL ise, CSV export formatına çevir
+        if (strpos($csv_url, '/export') === false) {
+            // Sheet ID'yi çıkar
+            preg_match('/\/d\/([a-zA-Z0-9-_]+)/', $csv_url, $matches);
+            if (!empty($matches[1])) {
+                $csv_url = "https://docs.google.com/spreadsheets/d/{$matches[1]}/export?format=csv&gid=0";
+            } else {
+                return new WP_REST_Response(array(
+                    'message' => 'Google Sheets URL\'sinden Sheet ID çıkarılamadı.',
+                ), 400);
+            }
+        }
+    }
+
+    // CSV verisini çek (SSL doğrulaması açık)
+    $response = wp_remote_get($csv_url, array(
+        'timeout' => 30,
+        'sslverify' => true, // Güvenlik için SSL doğrulaması açık
+        'redirection' => 2,
+    ));
+
+    if (is_wp_error($response)) {
+        return new WP_REST_Response(array(
+            'message' => 'Google Sheets\'ten veri çekilemedi: ' . $response->get_error_message(),
+        ), 500);
+    }
+
+    $csv_data = wp_remote_retrieve_body($response);
+    
+    if (empty($csv_data)) {
+        return new WP_REST_Response(array(
+            'message' => 'Google Sheets\'ten veri alınamadı. CSV formatında olduğundan emin olun.',
+        ), 400);
+    }
+
+    // CSV'yi parse et
+    $lines = str_getcsv($csv_data, "\n");
+    if (empty($lines) || count($lines) < 2) {
+        return new WP_REST_Response(array(
+            'message' => 'CSV verisi geçersiz veya boş.',
+        ), 400);
+    }
+
+    // İlk satır başlıklar
+    $headers = str_getcsv(array_shift($lines));
+    $headers = array_map('trim', $headers);
+    
+    // Header mapping (Google Sheets'teki sütun isimleri)
+    $header_map = array(
+        'sku' => array('sku', 'SKU', 'Ürün Kodu', 'urun_kodu'),
+        'name' => array('name', 'Name', 'Ürün Adı', 'urun_adi', 'title', 'Title', 'Başlık'),
+        'regular_price' => array('regular_price', 'Regular Price', 'Fiyat', 'fiyat', 'price', 'Price'),
+        'sale_price' => array('sale_price', 'Sale Price', 'İndirimli Fiyat', 'indirimli_fiyat'),
+        'stock_quantity' => array('stock_quantity', 'Stock', 'Stok', 'stok', 'quantity', 'Quantity', 'Miktar'),
+        'description' => array('description', 'Description', 'Açıklama', 'aciklama'),
+        'short_description' => array('short_description', 'Short Description', 'Kısa Açıklama', 'kisa_aciklama'),
+        'status' => array('status', 'Status', 'Durum', 'durum'),
+    );
+
+    // Header index'lerini bul
+    $column_indexes = array();
+    foreach ($header_map as $key => $possible_names) {
+        foreach ($possible_names as $name) {
+            $index = array_search(strtolower($name), array_map('strtolower', $headers));
+            if ($index !== false) {
+                $column_indexes[$key] = $index;
+                break;
+            }
+        }
+    }
+
+    if (empty($column_indexes['sku']) && empty($column_indexes['name'])) {
+        return new WP_REST_Response(array(
+            'message' => 'CSV\'de SKU veya Name sütunu bulunamadı.',
+            'found_headers' => $headers,
+        ), 400);
+    }
+
+    // Ürünleri işle
+    $products = array();
+    foreach ($lines as $line) {
+        if (empty(trim($line))) continue;
+        
+        $row = str_getcsv($line);
+        if (count($row) < count($headers)) continue;
+
+        $product_data = array();
+        
+        foreach ($column_indexes as $key => $index) {
+            if (isset($row[$index]) && !empty(trim($row[$index]))) {
+                $product_data[$key] = trim($row[$index]);
+            }
+        }
+
+        if (!empty($product_data)) {
+            $products[] = $product_data;
+        }
+    }
+
+    if (empty($products)) {
+        return new WP_REST_Response(array(
+            'message' => 'CSV\'den ürün verisi çıkarılamadı.',
+        ), 400);
+    }
+
+    // Toplu import fonksiyonunu çağır
+    $import_request = new WP_REST_Request('POST', '/gsp/v1/products/bulk-import');
+    $import_request->set_body(json_encode(array('products' => $products)));
+    $import_request->set_header('Content-Type', 'application/json');
+    
+    // Doğrudan fonksiyonu çağır
+    $import_response = gsp_bulk_import_products($import_request);
+    
+    $import_data = $import_response->get_data();
+    
+    return new WP_REST_Response(array(
+        'message' => 'Google Sheets\'ten ' . count($products) . ' ürün bulundu ve işlendi.',
+        'import_results' => $import_data,
+        'csv_url' => $csv_url,
+    ), 200);
+}
+
+// 4. Ayarlar Sayfası: Adminin API Secret Key'i panelle girmesi için
+add_action('admin_menu', 'gsp_connector_settings_page');
+
+function gsp_connector_settings_page() {
+    // Ana menüde görünmesi için add_menu_page kullanıyoruz
+    add_menu_page(
+        'GSP Connector Ayarları',           // Sayfa başlığı
+        'GSP Connector',                    // Menü adı
+        'manage_options',                    // Yetki
+        'gsp-connector-settings',           // Menü slug
+        'gsp_connector_settings_content',   // Callback fonksiyon
+        'dashicons-admin-network',          // İkon (WordPress dashicons)
+        30                                   // Pozisyon (30 = WooCommerce'dan sonra)
+    );
+    // Ayarları kaydetme fonksiyonunu kaydet
+    add_action( 'admin_init', 'gsp_connector_register_settings' );
+}
+
+function gsp_connector_register_settings() {
+    register_setting( 'gsp-connector-settings-group', 'gsp_api_secret_key' );
+    register_setting( 'gsp-connector-settings-group', 'gsp_github_username' );
+    register_setting( 'gsp-connector-settings-group', 'gsp_github_repo' );
+    register_setting( 'gsp-connector-settings-group', 'gsp_github_branch' );
+}
+
+function gsp_connector_settings_content() {
+    $api_base_url = rest_url('gsp/v1/');
+    $current_key = get_option('gsp_api_secret_key');
+    $github_username = get_option('gsp_github_username', '');
+    $github_repo = get_option('gsp_github_repo', '');
+    $github_branch = get_option('gsp_github_branch', 'main');
+    
+    // Yeni key oluşturma (AJAX)
+    if (isset($_POST['generate_new_key']) && wp_verify_nonce($_POST['_wpnonce'], 'generate_api_key')) {
+        $new_key = wp_generate_password(64, false);
+        update_option('gsp_api_secret_key', $new_key);
+        $current_key = $new_key;
+        echo '<div class="notice notice-success is-dismissible"><p>Yeni API Key oluşturuldu!</p></div>';
+    }
+    
+    // Örnek API Key (güvenlik için gerçek key değil, sadece format örneği)
+    $example_key = 'gsp_' . wp_generate_password(60, false);
+    ?>
+    <div class="wrap">
+        <h1>GSP Connector Ayarları</h1>
+        <form method="post" action="">
+            <?php wp_nonce_field('generate_api_key'); ?>
+            <input type="hidden" name="generate_new_key" value="1">
+        </form>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'gsp-connector-settings-group' ); ?>
+            <?php do_settings_sections( 'gsp-connector-settings-group' ); ?>
+            <table class="form-table">
+                <tr valign="top">
+                <th scope="row">API Secret Key</th>
+                <td>
+                    <input type="text" name="gsp_api_secret_key" id="gsp_api_secret_key" value="<?php echo esc_attr( $current_key ); ?>" style="width: 500px; font-family: monospace;" />
+                    <button type="button" class="button" onclick="copyApiKey()" style="margin-left: 10px;">Kopyala</button>
+                    <button type="button" class="button button-secondary" onclick="generateNewKey()" style="margin-left: 5px;">Yeni Key Oluştur</button>
+                    <p class="description">
+                        Bu anahtar, GSP Laravel panelinden alınmalı ve Laravel'deki site secret'ı ile eşleşmelidir. Uzaktan yetkilendirme için zorunludur.<br>
+                        <strong>Örnek format:</strong> <code><?php echo esc_html($example_key); ?></code>
+                    </p>
+                </td>
+                </tr>
+                <tr valign="top">
+                    <th scope="row">GitHub Güncelleme Ayarları</th>
+                    <td>
+                        <p class="description" style="margin-bottom: 15px;">
+                            <strong>Opsiyonel:</strong> GitHub üzerinden otomatik güncelleme bildirimi almak için aşağıdaki bilgileri doldurun.
+                            GitHub updater'ı aktif etmek için kullanıcı adı ve depo adı gereklidir.
+                        </p>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr>
+                                <td style="width: 150px; padding: 5px 0;">
+                                    <label for="gsp_github_username"><strong>GitHub Kullanıcı Adı:</strong></label>
+                                </td>
+                                <td style="padding: 5px 0;">
+                                    <input type="text" name="gsp_github_username" id="gsp_github_username" value="<?php echo esc_attr($github_username); ?>" style="width: 300px;" placeholder="your-github-username" />
+                                    <p class="description" style="margin: 5px 0 0 0;">Örn: mahmutseker</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="width: 150px; padding: 5px 0;">
+                                    <label for="gsp_github_repo"><strong>GitHub Depo Adı:</strong></label>
+                                </td>
+                                <td style="padding: 5px 0;">
+                                    <input type="text" name="gsp_github_repo" id="gsp_github_repo" value="<?php echo esc_attr($github_repo); ?>" style="width: 300px;" placeholder="gsp-connector-repo" />
+                                    <p class="description" style="margin: 5px 0 0 0;">Örn: gsp-connector</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="width: 150px; padding: 5px 0;">
+                                    <label for="gsp_github_branch"><strong>Ana Dal:</strong></label>
+                                </td>
+                                <td style="padding: 5px 0;">
+                                    <input type="text" name="gsp_github_branch" id="gsp_github_branch" value="<?php echo esc_attr($github_branch); ?>" style="width: 300px;" placeholder="main" />
+                                    <p class="description" style="margin: 5px 0 0 0;">Genellikle "main" veya "master"</p>
+                                </td>
+                            </tr>
+                        </table>
+                        <?php if (!empty($github_username) && !empty($github_repo)): ?>
+                            <div style="background: #e8f5e9; padding: 10px; border-left: 4px solid #4caf50; margin-top: 10px;">
+                                <strong>✅ GitHub Güncelleyici Aktif!</strong><br>
+                                <small>Güncelleme kontrolü: <code><?php echo esc_html($github_username); ?>/<?php echo esc_html($github_repo); ?></code> (<?php echo esc_html($github_branch); ?> dalı)</small>
+                            </div>
+                        <?php else: ?>
+                            <div style="background: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; margin-top: 10px;">
+                                <strong>ℹ️ GitHub Güncelleyici Pasif</strong><br>
+                                <small>GitHub kullanıcı adı ve depo adını girerek otomatik güncelleme bildirimlerini aktif edebilirsiniz.</small>
+                            </div>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            </table>
+            <?php submit_button('Ayarları Kaydet'); ?>
+        </form>
+        
+        <script>
+        function copyApiKey() {
+            var input = document.getElementById('gsp_api_secret_key');
+            input.select();
+            input.setSelectionRange(0, 99999);
+            document.execCommand('copy');
+            alert('API Key kopyalandı!');
+        }
+        
+        function generateNewKey() {
+            if (confirm('Yeni bir API Key oluşturulacak. Eski key geçersiz olacak. Devam etmek istiyor musunuz?')) {
+                var form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '';
+                var nonce = document.createElement('input');
+                nonce.type = 'hidden';
+                nonce.name = '_wpnonce';
+                nonce.value = '<?php echo wp_create_nonce('generate_api_key'); ?>';
+                form.appendChild(nonce);
+                var generate = document.createElement('input');
+                generate.type = 'hidden';
+                generate.name = 'generate_new_key';
+                generate.value = '1';
+                form.appendChild(generate);
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+        </script>
+        
+        <hr style="margin: 30px 0;">
+        
+        <h2>API Endpoint'leri</h2>
+        <p>API Base URL: <code><?php echo esc_html($api_base_url); ?></code></p>
+        <p><strong>Not:</strong> Tüm isteklerde <code>X-GSP-API-KEY</code> başlığı ile API Secret Key gönderilmelidir.</p>
+        
+        <table class="wp-list-table widefat fixed striped" style="margin-top: 20px;">
+            <thead>
+                <tr>
+                    <th style="width: 150px;">Method</th>
+                    <th>Endpoint</th>
+                    <th>Açıklama</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>GET</code></td>
+                    <td><code>/products</code></td>
+                    <td>Ürün listesi (sayfalama: ?per_page=20&page=1&search=...)</td>
+                </tr>
+                <tr>
+                    <td><code>GET</code></td>
+                    <td><code>/products/{id}</code></td>
+                    <td>Ürün detayı</td>
+                </tr>
+                <tr>
+                    <td><code>POST</code></td>
+                    <td><code>/products</code></td>
+                    <td>Yeni ürün oluştur (name, sku, regular_price, sale_price, stock_quantity, description, short_description)</td>
+                </tr>
+                <tr>
+                    <td><code>PUT</code></td>
+                    <td><code>/products/{id}</code></td>
+                    <td>Ürün güncelle (name, sku, regular_price, sale_price, stock_quantity, description, short_description, status)</td>
+                </tr>
+                <tr>
+                    <td><code>DELETE</code></td>
+                    <td><code>/products/{id}</code></td>
+                    <td>Ürün sil (çöp kutusuna taşır, kalıcı silme için ?force=true)</td>
+                </tr>
+                <tr>
+                    <td><code>POST</code></td>
+                    <td><code>/products/{id}/stock</code></td>
+                    <td>Stok güncelle ({"quantity": 100})</td>
+                </tr>
+                <tr>
+                    <td><code>POST</code></td>
+                    <td><code>/sync-product-price</code></td>
+                    <td>SKU ile fiyat güncelle ({"sku": "ABC123", "new_price": 99.99})</td>
+                </tr>
+                <tr style="background-color: #f0f8ff;">
+                    <td><code>POST</code></td>
+                    <td><code>/products/bulk-import</code></td>
+                    <td><strong>Toplu ürün import (JSON)</strong> - {"products": [{"sku": "ABC", "name": "Ürün", "regular_price": 100, ...}]}</td>
+                </tr>
+                <tr style="background-color: #f0f8ff;">
+                    <td><code>POST</code></td>
+                    <td><code>/products/import-from-sheets</code></td>
+                    <td><strong>Google Sheets'ten import</strong> - {"sheet_id": "SHEET_ID"} veya {"sheet_url": "https://..."}</td>
+                </tr>
+                <tr style="background-color: #fff3cd;">
+                    <td><code>GET</code></td>
+                    <td><code>/test</code></td>
+                    <td><strong>Bağlantı testi</strong> - API'nin çalışıp çalışmadığını kontrol eder</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <hr style="margin: 30px 0;">
+        
+        <h2>Güvenlik Özellikleri</h2>
+        <div style="background: #e8f5e9; padding: 20px; border-left: 4px solid #4caf50; margin-bottom: 20px;">
+            <h3>✅ Aktif Güvenlik Önlemleri</h3>
+            <ul style="margin: 10px 0;">
+                <li><strong>Rate Limiting:</strong> Dakikada maksimum 60 istek (DoS saldırılarını önler)</li>
+                <li><strong>API Key Doğrulama:</strong> Tüm endpoint'ler X-GSP-API-KEY başlığı gerektirir</li>
+                <li><strong>Timing Attack Koruması:</strong> hash_equals() ile güvenli karşılaştırma</li>
+                <li><strong>Input Sanitization:</strong> Tüm kullanıcı girdileri temizleniyor</li>
+                <li><strong>URL Validasyonu:</strong> Google Sheets import sadece Google domain'lerine izin veriyor</li>
+                <li><strong>Bulk Import Limiti:</strong> Maksimum 500 ürün (DOS önlemi)</li>
+                <li><strong>SSL Doğrulama:</strong> Google Sheets'ten veri çekerken SSL kontrolü aktif</li>
+                <li><strong>Status Whitelist:</strong> Sadece geçerli post status'leri kabul ediliyor</li>
+                <li><strong>Pagination Limit:</strong> Sayfa başına maksimum 100 ürün</li>
+            </ul>
+            
+            <h3>⚠️ Güvenlik Önerileri</h3>
+            <ul style="margin: 10px 0;">
+                <li>API Secret Key'i güçlü ve rastgele bir değer seçin (en az 32 karakter)</li>
+                <li>API Key'i HTTPS üzerinden gönderin</li>
+                <li>Production ortamında WP_DEBUG'ı kapatın</li>
+                <li>Google Sheets'i sadece "Herkes linke sahip olanlar" olarak paylaşın (gerekirse)</li>
+                <li>Düzenli olarak API Key'i değiştirin</li>
+                <li>Laravel panelinden gelen istekleri IP whitelist ile sınırlayın (sunucu seviyesinde)</li>
+            </ul>
+        </div>
+        
+        <hr style="margin: 30px 0;">
+        
+        <h2>Postman ile Test Etme</h2>
+        <div style="background: #fff3cd; padding: 20px; border-left: 4px solid #ffc107; margin-bottom: 20px;">
+            <h3>📋 Adım Adım Postman Kurulumu</h3>
+            
+            <h4>1. Yeni Request Oluşturun</h4>
+            <ul>
+                <li>Postman'i açın ve yeni bir request oluşturun</li>
+                <li>Request adını verin (örn: "GSP Test")</li>
+            </ul>
+            
+            <h4>2. Request Ayarları</h4>
+            <p><strong>Method:</strong> GET, POST, PUT veya DELETE (endpoint'e göre)</p>
+            <p><strong>URL:</strong> <code><?php echo esc_html($api_base_url); ?>test</code></p>
+            
+            <h4>3. Headers Ekleme</h4>
+            <p><strong>Key:</strong> <code>X-GSP-API-KEY</code></p>
+            <p><strong>Value:</strong> <code><?php echo esc_html($current_key ?: 'API_KEY_BURAYA'); ?></code></p>
+            <p><em>Not: API Key'inizi WordPress admin panelinden alın veya "Yeni Key Oluştur" butonuna tıklayın</em></p>
+            
+            <div style="background: #fff; padding: 15px; border: 2px solid #2271b1; margin: 15px 0;">
+                <h4>📝 Postman Header Ayarları (Görsel Rehber)</h4>
+                <ol>
+                    <li>Postman'de <strong>Headers</strong> sekmesine tıklayın</li>
+                    <li><strong>Key</strong> sütununa: <code>X-GSP-API-KEY</code> yazın</li>
+                    <li><strong>Value</strong> sütununa: API Key'inizi yapıştırın</li>
+                    <li>POST/PUT istekleri için ayrıca ekleyin:
+                        <ul>
+                            <li><strong>Key:</strong> <code>Content-Type</code></li>
+                            <li><strong>Value:</strong> <code>application/json</code></li>
+                        </ul>
+                    </li>
+                </ol>
+            </div>
+            
+            <h4>4. Body (POST/PUT istekleri için)</h4>
+            <p><strong>Body Type:</strong> <code>raw</code></p>
+            <p><strong>Content-Type:</strong> <code>application/json</code></p>
+            
+            <h3>🔧 Örnek İstekler</h3>
+            
+            <h4>1. Bağlantı Testi (GET) - İlk Test İçin</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+URL: <?php echo esc_html($api_base_url); ?>test
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'gsp_your_secret_key_here_64_characters_long_random_string'); ?></code></pre>
+            <p><strong>✅ Başarılı yanıt örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 10px; border: 1px solid #c3e6cb; font-size: 12px;"><code>{
+  "success": true,
+  "message": "GSP Connector API çalışıyor!",
+  "timestamp": "2025-11-04 18:30:00",
+  "api_version": "1.0.0",
+  "your_ip": "127.0.0.1",
+  "woocommerce_active": true
+}</code></pre>
+            
+            <h4>2. Ürün Listesi (GET)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+URL: <?php echo esc_html($api_base_url); ?>products?per_page=10&page=1
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?></code></pre>
+            
+            <h4>3. Ürün Oluşturma (POST) - Postman'de Test Edin</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+URL: <?php echo esc_html($api_base_url); ?>products
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
+
+Body (raw JSON):
+{
+  "name": "Test Ürünü",
+  "sku": "TEST-001",
+  "regular_price": "99.99",
+  "sale_price": "79.99",
+  "stock_quantity": 50,
+  "description": "Bu bir test ürünüdür",
+  "short_description": "Test",
+  "status": "publish"
+}</code></pre>
+            
+            <h4>4. Ürün Güncelleme (PUT)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: PUT
+URL: <?php echo esc_html($api_base_url); ?>products/123
+(Not: 123 yerine gerçek ürün ID'sini yazın)
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
+
+Body (raw JSON):
+{
+  "name": "Güncellenmiş Ürün Adı",
+  "regular_price": "149.99",
+  "stock_quantity": 100
+}</code></pre>
+            
+            <h4>5. SKU ile Fiyat Güncelleme (POST)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+URL: <?php echo esc_html($api_base_url); ?>sync-product-price
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
+
+Body (raw JSON):
+{
+  "sku": "TEST-001",
+  "new_price": 89.99
+}</code></pre>
+            
+            <h4>6. Toplu Import (POST)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
+
+Body (raw JSON):
+{
+  "products": [
+    {
+      "sku": "PROD-001",
+      "name": "Ürün 1",
+      "regular_price": "100",
+      "stock_quantity": 25
+    },
+    {
+      "sku": "PROD-002",
+      "name": "Ürün 2",
+      "regular_price": "200",
+      "stock_quantity": 50
+    }
+  ]
+}</code></pre>
+            
+            <h3>✅ Başarılı Yanıt Örneği</h3>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto;"><code>{
+  "success": true,
+  "message": "İşlem başarılı",
+  "data": { ... }
+}</code></pre>
+            
+            <h3>❌ Hata Yanıtı Örneği</h3>
+            <pre style="background: #f8d7da; padding: 15px; border: 1px solid #f5c6cb; overflow-x: auto;"><code>{
+  "code": "gsp_invalid_key",
+  "message": "Geçersiz GSP API Anahtarı.",
+  "data": {
+    "status": 401
+  }
+}</code></pre>
+            
+            <h3>⚠️ Önemli Notlar</h3>
+            <ul>
+                <li><strong>API Key Oluşturma:</strong> WordPress admin panelinde <strong>GSP Connector</strong> sayfasında "Yeni Key Oluştur" butonuna tıklayın</li>
+                <li><strong>API Key Formatı:</strong> En az 64 karakter uzunluğunda rastgele bir string olmalıdır</li>
+                <li><strong>İlk Test:</strong> Her zaman önce <code>/test</code> endpoint'ini kullanarak bağlantıyı test edin</li>
+                <li><strong>Rate Limiting:</strong> Dakikada maksimum 60 istek (429 hatası alırsanız bekleyin)</li>
+                <li><strong>Content-Type:</strong> Tüm POST/PUT isteklerinde <code>Content-Type: application/json</code> header'ı zorunludur</li>
+                <li><strong>HTTPS:</strong> Production ortamında mutlaka HTTPS kullanın</li>
+                <li><strong>API Key Güvenliği:</strong> API Key'inizi asla paylaşmayın veya public kodlara eklemeyin</li>
+            </ul>
+            
+            <h3>🔑 Örnek API Key Formatı</h3>
+            <p>Güvenli bir API key şu formatta olmalıdır:</p>
+            <pre style="background: #f5f5f5; padding: 10px; border: 1px solid #ddd; font-size: 11px;"><code><?php echo esc_html($example_key); ?></code></pre>
+            <p><em>Not: Yukarıdaki key sadece format örneğidir. Gerçek key'inizi WordPress admin panelinden alın.</em></p>
+        </div>
+        
+        <hr style="margin: 30px 0;">
+        
+        <h2>Google Sheets Kullanımı</h2>
+        <div style="background: #f9f9f9; padding: 20px; border-left: 4px solid #2271b1;">
+            <h3>1. Google Sheets Tablosu Oluşturma</h3>
+            <p>Google Sheets'te ürün bilgilerinizi aşağıdaki sütunlarla oluşturun:</p>
+            <ul>
+                <li><strong>SKU</strong> veya <strong>Ürün Kodu</strong> - Ürün kodu (güncelleme için)</li>
+                <li><strong>Name</strong> veya <strong>Ürün Adı</strong> - Ürün adı (yeni ürün için zorunlu)</li>
+                <li><strong>Regular Price</strong> veya <strong>Fiyat</strong> - Normal fiyat</li>
+                <li><strong>Sale Price</strong> veya <strong>İndirimli Fiyat</strong> - İndirimli fiyat</li>
+                <li><strong>Stock</strong> veya <strong>Stok</strong> - Stok miktarı</li>
+                <li><strong>Description</strong> veya <strong>Açıklama</strong> - Ürün açıklaması</li>
+                <li><strong>Status</strong> veya <strong>Durum</strong> - publish, draft, vb.</li>
+            </ul>
+            
+            <h3>2. Google Sheets'i Paylaşılabilir Yapma</h3>
+            <p>Google Sheets'te <strong>Dosya > Paylaş > Herkes linke sahip olanlar</strong> veya <strong>Herkese açık</strong> yapın.</p>
+            
+            <h3>3. Sheet ID'yi Bulma</h3>
+            <p>Google Sheets URL'sinden Sheet ID'yi bulun:</p>
+            <p><code>https://docs.google.com/spreadsheets/d/<strong>BURADAKİ_KOD</strong>/edit</code></p>
+            
+            <h3>4. Laravel'den Kullanım</h3>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>// Yöntem 1: Sheet ID ile
+$response = Http::withHeaders([
+    'X-GSP-API-KEY' => 'your-secret-key',
+    'Content-Type' => 'application/json',
+])->post('https://yoursite.com/wp-json/gsp/v1/products/import-from-sheets', [
+    'sheet_id' => '1ABC123XYZ...'
+]);
+
+// Yöntem 2: Sheet URL ile
+$response = Http::withHeaders([
+    'X-GSP-API-KEY' => 'your-secret-key',
+    'Content-Type' => 'application/json',
+])->post('https://yoursite.com/wp-json/gsp/v1/products/import-from-sheets', [
+    'sheet_url' => 'https://docs.google.com/spreadsheets/d/1ABC123XYZ.../edit'
+]);
+
+// Yöntem 3: JSON formatında direkt gönderme
+$response = Http::withHeaders([
+    'X-GSP-API-KEY' => 'your-secret-key',
+    'Content-Type' => 'application/json',
+])->post('https://yoursite.com/wp-json/gsp/v1/products/bulk-import', [
+    'products' => [
+        [
+            'sku' => 'ABC123',
+            'name' => 'Örnek Ürün',
+            'regular_price' => 99.99,
+            'stock_quantity' => 50
+        ],
+        // ... daha fazla ürün
+    ]
+]);</code></pre>
+        </div>
+    </div>
+    <?php
+}

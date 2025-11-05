@@ -1,0 +1,325 @@
+<?php
+/**
+ * GitHub Plugin Updater
+ * 
+ * WordPress eklentileri için GitHub üzerinden otomatik güncelleme kontrolü sağlar.
+ * 
+ * @package GSP_Connector
+ * @version 1.0.0
+ */
+
+if (!defined('ABSPATH')) {
+    exit; // Güvenlik kontrolü
+}
+
+class GitHub_Plugin_Updater {
+    
+    private $plugin_file;
+    private $plugin_slug;
+    private $github_username;
+    private $github_repo;
+    private $github_branch;
+    private $cache_key;
+    private $cache_duration;
+    private $current_version;
+    
+    /**
+     * Constructor
+     * 
+     * @param string $plugin_file Eklenti ana dosya yolu (__FILE__)
+     * @param string $github_username GitHub kullanıcı adı
+     * @param string $github_repo GitHub depo adı
+     * @param string $github_branch Ana dal adı (default: 'main')
+     */
+    public function __construct($plugin_file, $github_username, $github_repo, $github_branch = 'main') {
+        $this->plugin_file = $plugin_file;
+        $this->github_username = $github_username;
+        $this->github_repo = $github_repo;
+        $this->github_branch = $github_branch;
+        
+        // Plugin bilgilerini al
+        $plugin_data = get_file_data($plugin_file, array('Version' => 'Version', 'TextDomain' => 'Text Domain'));
+        $this->plugin_slug = basename(dirname($plugin_file));
+        $this->current_version = $plugin_data['Version'];
+        
+        // Cache ayarları
+        $this->cache_key = 'gsp_github_update_check_' . md5($this->plugin_slug);
+        $this->cache_duration = 12 * HOUR_IN_SECONDS; // 12 saat
+        
+        // WordPress güncelleme sistemine entegre et
+        add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
+        add_filter('plugins_api', array($this, 'plugin_api_call'), 10, 3);
+        add_filter('upgrader_post_install', array($this, 'post_install'), 10, 3);
+        
+        // Admin bildirimleri
+        add_action('admin_notices', array($this, 'admin_notice'));
+    }
+    
+    /**
+     * GitHub'dan güncelleme kontrolü yapar
+     * 
+     * @param object $transient WordPress güncelleme transient objesi
+     * @return object
+     */
+    public function check_for_update($transient) {
+        // Eklenti yüklü değilse veya transient boşsa
+        if (empty($transient->checked) || !isset($transient->checked[$this->plugin_file])) {
+            return $transient;
+        }
+        
+        // Cache kontrolü
+        $cached = get_transient($this->cache_key);
+        if ($cached !== false) {
+            if ($cached['new_version'] && version_compare($this->current_version, $cached['version'], '<')) {
+                $transient->response[$this->plugin_file] = $cached;
+            }
+            return $transient;
+        }
+        
+        // GitHub API'den güncelleme bilgisi al
+        $release_info = $this->get_latest_release();
+        
+        if ($release_info && version_compare($this->current_version, $release_info['version'], '<')) {
+            $update_data = array(
+                'slug' => $this->plugin_slug,
+                'plugin' => $this->plugin_file,
+                'new_version' => $release_info['version'],
+                'version' => $release_info['version'],
+                'url' => $release_info['url'],
+                'package' => $release_info['package'],
+                'tested' => get_bloginfo('version'),
+                'requires' => '5.0',
+                'requires_php' => '7.4',
+            );
+            
+            // Cache'e kaydet
+            set_transient($this->cache_key, $update_data, $this->cache_duration);
+            
+            $transient->response[$this->plugin_file] = (object) $update_data;
+        } else {
+            // Güncelleme yok, cache'e kaydet
+            set_transient($this->cache_key, array('new_version' => false), $this->cache_duration);
+        }
+        
+        return $transient;
+    }
+    
+    /**
+     * GitHub API'den en son release bilgisini alır
+     * 
+     * @return array|false
+     */
+    private function get_latest_release() {
+        // Önce releases API'yi dene (tag'ler)
+        $releases_url = sprintf(
+            'https://api.github.com/repos/%s/%s/releases/latest',
+            $this->github_username,
+            $this->github_repo
+        );
+        
+        $response = wp_remote_get($releases_url, array(
+            'timeout' => 15,
+            'headers' => array(
+                'Accept' => 'application/vnd.github.v3+json',
+                'User-Agent' => 'WordPress-GSP-Connector'
+            ),
+            'sslverify' => true
+        ));
+        
+        if (is_wp_error($response)) {
+            // Releases API başarısız olursa, branch'ten kontrol et
+            return $this->get_latest_from_branch();
+        }
+        
+        $release_data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!empty($release_data['tag_name'])) {
+            $version = $this->clean_version($release_data['tag_name']);
+            $zip_url = $release_data['zipball_url'];
+            
+            return array(
+                'version' => $version,
+                'url' => $release_data['html_url'],
+                'package' => $zip_url,
+                'release_notes' => $release_data['body'] ?? ''
+            );
+        }
+        
+        // Release bulunamazsa branch'ten kontrol et
+        return $this->get_latest_from_branch();
+    }
+    
+    /**
+     * Branch'ten en son commit bilgisini alır (releases yoksa)
+     * 
+     * @return array|false
+     */
+    private function get_latest_from_branch() {
+        $branch_url = sprintf(
+            'https://api.github.com/repos/%s/%s/commits/%s',
+            $this->github_username,
+            $this->github_repo,
+            $this->github_branch
+        );
+        
+        $response = wp_remote_get($branch_url, array(
+            'timeout' => 15,
+            'headers' => array(
+                'Accept' => 'application/vnd.github.v3+json',
+                'User-Agent' => 'WordPress-GSP-Connector'
+            ),
+            'sslverify' => true
+        ));
+        
+        if (is_wp_error($response)) {
+            return false;
+        }
+        
+        $commit_data = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (empty($commit_data['sha'])) {
+            return false;
+        }
+        
+        // Commit SHA'sının ilk 7 karakterini versiyon olarak kullan
+        $version = $this->current_version . '-' . substr($commit_data['sha'], 0, 7);
+        $zip_url = sprintf(
+            'https://github.com/%s/%s/archive/%s.zip',
+            $this->github_username,
+            $this->github_repo,
+            $this->github_branch
+        );
+        
+        return array(
+            'version' => $version,
+            'url' => sprintf('https://github.com/%s/%s', $this->github_username, $this->github_repo),
+            'package' => $zip_url,
+            'release_notes' => ''
+        );
+    }
+    
+    /**
+     * Versiyon numarasını temizler (v prefix'ini kaldırır)
+     * 
+     * @param string $version
+     * @return string
+     */
+    private function clean_version($version) {
+        return preg_replace('/^v/', '', $version);
+    }
+    
+    /**
+     * Plugin API çağrısı (WordPress güncelleme sayfası için)
+     * 
+     * @param mixed $result
+     * @param string $action
+     * @param object $args
+     * @return object
+     */
+    public function plugin_api_call($result, $action, $args) {
+        if ($action !== 'plugin_information' || $args->slug !== $this->plugin_slug) {
+            return $result;
+        }
+        
+        $release_info = $this->get_latest_release();
+        
+        if (!$release_info) {
+            return $result;
+        }
+        
+        $plugin_data = get_plugin_data($this->plugin_file);
+        
+        $result = (object) array(
+            'name' => $plugin_data['Name'],
+            'slug' => $this->plugin_slug,
+            'version' => $release_info['version'],
+            'author' => $plugin_data['Author'],
+            'author_profile' => $plugin_data['AuthorURI'],
+            'requires' => '5.0',
+            'requires_php' => '7.4',
+            'tested' => get_bloginfo('version'),
+            'last_updated' => current_time('mysql'),
+            'homepage' => sprintf('https://github.com/%s/%s', $this->github_username, $this->github_repo),
+            'download_link' => $release_info['package'],
+            'sections' => array(
+                'description' => $plugin_data['Description'],
+                'changelog' => !empty($release_info['release_notes']) ? $release_info['release_notes'] : 'Güncelleme detayları için GitHub deposunu ziyaret edin.'
+            ),
+            'banners' => array(
+                'low' => '',
+                'high' => ''
+            )
+        );
+        
+        return $result;
+    }
+    
+    /**
+     * Güncelleme sonrası işlemler
+     * 
+     * @param bool $response
+     * @param array $hook_extra
+     * @param array $result
+     * @return array
+     */
+    public function post_install($response, $hook_extra, $result) {
+        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_file) {
+            return $response;
+        }
+        
+        // Cache'i temizle
+        delete_transient($this->cache_key);
+        
+        return $response;
+    }
+    
+    /**
+     * Admin bildirimi (güncelleme varsa)
+     */
+    public function admin_notice() {
+        // Sadece admin panelinde ve eklenti ayarları sayfasında göster
+        if (!current_user_can('update_plugins')) {
+            return;
+        }
+        
+        $update_data = get_transient($this->cache_key);
+        
+        if (!$update_data || empty($update_data['new_version'])) {
+            // Cache yoksa kontrol et
+            $release_info = $this->get_latest_release();
+            if ($release_info && version_compare($this->current_version, $release_info['version'], '<')) {
+                $this->show_update_notice($release_info);
+            }
+        } elseif ($update_data['new_version'] && version_compare($this->current_version, $update_data['version'], '<')) {
+            $this->show_update_notice($update_data);
+        }
+    }
+    
+    /**
+     * Güncelleme bildirimi gösterir
+     * 
+     * @param array $update_data
+     */
+    private function show_update_notice($update_data) {
+        $update_url = wp_nonce_url(
+            admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($this->plugin_file)),
+            'upgrade-plugin_' . $this->plugin_file
+        );
+        
+        ?>
+        <div class="notice notice-info is-dismissible">
+            <p>
+                <strong>GSP Connector</strong> için yeni bir güncelleme mevcut!
+                <strong>Versiyon <?php echo esc_html($update_data['version']); ?></strong> indirilebilir.
+                <a href="<?php echo esc_url($update_url); ?>" class="button button-primary" style="margin-left: 10px;">
+                    Şimdi Güncelle
+                </a>
+                <a href="<?php echo esc_url(admin_url('plugins.php')); ?>" class="button" style="margin-left: 5px;">
+                    Eklentiler Sayfasına Git
+                </a>
+            </p>
+        </div>
+        <?php
+    }
+}
+

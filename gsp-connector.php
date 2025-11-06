@@ -359,6 +359,19 @@ function gsp_create_product( WP_REST_Request $request ) {
         ), 500);
     }
 
+    // Currency'yi kaydet (eğer gönderilmişse)
+    if (isset($data['currency'])) {
+        $currency = sanitize_text_field($data['currency']);
+        if (!empty($currency)) {
+            if (!gsp_validate_currency($currency)) {
+                return new WP_REST_Response(array(
+                    'message' => 'Geçersiz para birimi kodu. Desteklenen: ' . implode(', ', gsp_get_allowed_currencies()),
+                ), 400);
+            }
+            gsp_save_product_currency($product_id, $currency);
+        }
+    }
+
     return new WP_REST_Response(array(
         'message' => 'Ürün başarıyla oluşturuldu.',
         'product' => gsp_format_product(wc_get_product($product_id)),
@@ -409,6 +422,22 @@ function gsp_update_product( WP_REST_Request $request ) {
     
     if (isset($data['short_description'])) {
         $product->set_short_description(wp_kses_post($data['short_description']));
+    }
+
+    // Currency'yi güncelle (eğer gönderilmişse)
+    if (isset($data['currency'])) {
+        $currency = sanitize_text_field($data['currency']);
+        if (!empty($currency)) {
+            if (!gsp_validate_currency($currency)) {
+                return new WP_REST_Response(array(
+                    'message' => 'Geçersiz para birimi kodu. Desteklenen: ' . implode(', ', gsp_get_allowed_currencies()),
+                ), 400);
+            }
+            gsp_save_product_currency($product_id, $currency);
+        } else {
+            // Currency boşsa, meta'yı sil
+            gsp_save_product_currency($product_id, '');
+        }
     }
 
     $result = $product->save();
@@ -488,14 +517,94 @@ function gsp_update_stock( WP_REST_Request $request ) {
     ), 200);
 }
 
+// 8.5. Currency Helper Fonksiyonları
+/**
+ * Desteklenen para birimleri listesi
+ */
+function gsp_get_allowed_currencies() {
+    return apply_filters('gsp_allowed_currencies', array(
+        'TRY', 'USD', 'EUR', 'GBP', 'CHF', 'JPY', 'CAD', 'AUD', 'RUB', 'CNY', 'INR', 'BRL', 'MXN', 'ZAR', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF'
+    ));
+}
+
+/**
+ * Currency meta key
+ */
+function gsp_get_currency_meta_key() {
+    return apply_filters('gsp_currency_meta_key', '_product_currency');
+}
+
+/**
+ * Currency validasyonu
+ */
+function gsp_validate_currency($currency) {
+    if (empty($currency)) {
+        return true; // Opsiyonel
+    }
+    
+    $currency = strtoupper(trim($currency));
+    $allowed = gsp_get_allowed_currencies();
+    
+    return in_array($currency, $allowed);
+}
+
+/**
+ * Ürün currency'sini kaydet
+ */
+function gsp_save_product_currency($product_id, $currency) {
+    $meta_key = gsp_get_currency_meta_key();
+    
+    if (empty($currency)) {
+        // Currency boşsa, meta'yı sil
+        delete_post_meta($product_id, $meta_key);
+        $product = wc_get_product($product_id);
+        if ($product) {
+            $product->delete_meta_data($meta_key);
+            $product->save();
+        }
+        return;
+    }
+    
+    $currency = strtoupper(trim($currency));
+    
+    if (gsp_validate_currency($currency)) {
+        update_post_meta($product_id, $meta_key, $currency);
+        $product = wc_get_product($product_id);
+        if ($product) {
+            $product->update_meta_data($meta_key, $currency);
+            $product->save();
+        }
+        
+        // Multi-currency eklentileri için hook
+        do_action('gsp_product_currency_updated', $product_id, $currency);
+    }
+}
+
+/**
+ * Ürün currency'sini al
+ */
+function gsp_get_product_currency($product_id) {
+    $meta_key = gsp_get_currency_meta_key();
+    $currency = get_post_meta($product_id, $meta_key, true);
+    
+    if (empty($currency)) {
+        // Varsayılan currency'yi al
+        return get_option('woocommerce_currency', 'TRY');
+    }
+    
+    return strtoupper($currency);
+}
+
 // 9. Ürün Formatlama Yardımcı Fonksiyonu
 function gsp_format_product( $product ) {
     if (!$product) {
         return null;
     }
 
+    $product_id = $product->get_id();
+    
     return array(
-        'id'                => $product->get_id(),
+        'id'                => $product_id,
         'name'              => $product->get_name(),
         'sku'               => $product->get_sku(),
         'type'              => $product->get_type(),
@@ -503,6 +612,7 @@ function gsp_format_product( $product ) {
         'regular_price'     => $product->get_regular_price(),
         'sale_price'        => $product->get_sale_price(),
         'price'             => $product->get_price(),
+        'currency'          => gsp_get_product_currency($product_id), // Currency eklendi
         'stock_quantity'    => $product->get_stock_quantity(),
         'stock_status'      => $product->get_stock_status(),
         'manage_stock'      => $product->get_manage_stock(),
@@ -690,11 +800,24 @@ function gsp_bulk_import_products( WP_REST_Request $request ) {
                 $results['failed']++;
                 $results['errors'][] = "Satır " . ($index + 1) . ": " . $saved->get_error_message();
             } else {
+                // Currency'yi kaydet (eğer gönderilmişse)
+                if (isset($product_data['currency'])) {
+                    $currency = sanitize_text_field($product_data['currency']);
+                    if (!empty($currency)) {
+                        if (gsp_validate_currency($currency)) {
+                            gsp_save_product_currency($product->get_id(), $currency);
+                        } else {
+                            $results['errors'][] = "Satır " . ($index + 1) . ": Geçersiz para birimi kodu: $currency";
+                        }
+                    }
+                }
+                
                 $results['success']++;
                 $results['updated'][] = array(
                     'id' => $product->get_id(),
                     'sku' => $product->get_sku(),
                     'name' => $product->get_name(),
+                    'currency' => gsp_get_product_currency($product->get_id()),
                 );
             }
         } catch (Exception $e) {

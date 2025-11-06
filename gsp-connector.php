@@ -40,6 +40,7 @@ add_action('plugins_loaded', function() {
         $github_username = get_option('gsp_github_username', '');
         $github_repo = get_option('gsp_github_repo', '');
         $github_branch = get_option('gsp_github_branch', 'main');
+        $branch_only_mode = get_option('gsp_github_branch_only', '') === '1'; // Release kontrolünü atla
         
         // Eğer GitHub bilgileri girilmişse, updater'ı başlat
         if (!empty($github_username) && !empty($github_repo)) {
@@ -47,7 +48,8 @@ add_action('plugins_loaded', function() {
                 __FILE__, // Eklenti dosya yolu
                 $github_username, // GitHub Kullanıcı Adı
                 $github_repo, // GitHub Depo Adı
-                $github_branch // Ana Dal Adı
+                $github_branch, // Ana Dal Adı
+                $branch_only_mode // Branch-only modu (release kontrolünü atla)
             );
         }
     }
@@ -1037,6 +1039,12 @@ function gsp_connector_register_settings() {
     register_setting( 'gsp-connector-settings-group', 'gsp_github_username' );
     register_setting( 'gsp-connector-settings-group', 'gsp_github_repo' );
     register_setting( 'gsp-connector-settings-group', 'gsp_github_branch' );
+    register_setting( 'gsp-connector-settings-group', 'gsp_github_branch_only' );
+    
+    // Checkbox için sanitize callback
+    add_filter('sanitize_option_gsp_github_branch_only', function($value) {
+        return $value === '1' ? '1' : '';
+    });
 }
 
 function gsp_connector_settings_content() {
@@ -1045,6 +1053,7 @@ function gsp_connector_settings_content() {
     $github_username = get_option('gsp_github_username', '');
     $github_repo = get_option('gsp_github_repo', '');
     $github_branch = get_option('gsp_github_branch', 'main');
+    $branch_only_mode = get_option('gsp_github_branch_only', '') === '1'; // Checkbox değeri
     
     // Plugin versiyon bilgisini al
     $plugin_data = get_file_data(__FILE__, array('Version' => 'Version'));
@@ -1270,12 +1279,32 @@ function gsp_connector_settings_content() {
                                     <p class="description" style="margin: 5px 0 0 0;">Genellikle "main" veya "master"</p>
                                 </td>
                             </tr>
+                            <tr>
+                                <td style="width: 150px; padding: 5px 0;">
+                                    <label for="gsp_github_branch_only"><strong>Güncelleme Modu:</strong></label>
+                                </td>
+                                <td style="padding: 5px 0;">
+                                    <label style="display: flex; align-items: center; gap: 8px;">
+                                        <input type="checkbox" name="gsp_github_branch_only" id="gsp_github_branch_only" value="1" <?php echo $branch_only_mode ? 'checked="checked"' : ''; ?> />
+                                        <strong>Branch-Only Modu (Release kontrolünü atla)</strong>
+                                    </label>
+                                    <p class="description" style="margin: 5px 0 0 0;">
+                                        ✅ <strong>Aktif:</strong> Release oluşturmadan direkt branch'ten güncelleme yapar. Her commit'te güncelleme kontrol edilir.<br>
+                                        ❌ <strong>Pasif:</strong> Önce release kontrolü yapar, yoksa branch'ten kontrol eder (varsayılan).
+                                    </p>
+                                </td>
+                            </tr>
                         </table>
                         <?php if (!empty($github_username) && !empty($github_repo)): ?>
                             <div style="background: #e8f5e9; padding: 10px; border-left: 4px solid #4caf50; margin-top: 10px;">
                                 <strong>✅ GitHub Güncelleyici Aktif!</strong><br>
                                 <small>
                                     Güncelleme kontrolü: <code><?php echo esc_html($github_username); ?>/<?php echo esc_html($github_repo); ?></code> (<?php echo esc_html($github_branch); ?> dalı)
+                                    <?php if ($branch_only_mode): ?>
+                                        <br><strong>🔄 Branch-Only Modu Aktif</strong> - Release kontrolü atlanıyor, direkt branch'ten güncelleme yapılıyor.
+                                    <?php else: ?>
+                                        <br><strong>📦 Release Modu</strong> - Önce release kontrolü yapılıyor.
+                                    <?php endif; ?>
                                     <?php if ($latest_version): ?>
                                         <br>En son versiyon: <strong><?php echo esc_html($latest_version); ?></strong>
                                         <?php if ($update_available): ?>

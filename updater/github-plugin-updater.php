@@ -22,6 +22,7 @@ class GitHub_Plugin_Updater {
     private $cache_key;
     private $cache_duration;
     private $current_version;
+    private $branch_only_mode; // Release kontrolünü atla, direkt branch'ten güncelle
     
     /**
      * Constructor
@@ -31,11 +32,12 @@ class GitHub_Plugin_Updater {
      * @param string $github_repo GitHub depo adı
      * @param string $github_branch Ana dal adı (default: 'main')
      */
-    public function __construct($plugin_file, $github_username, $github_repo, $github_branch = 'main') {
+    public function __construct($plugin_file, $github_username, $github_repo, $github_branch = 'main', $branch_only_mode = false) {
         $this->plugin_file = $plugin_file;
         $this->github_username = $github_username;
         $this->github_repo = $github_repo;
         $this->github_branch = $github_branch;
+        $this->branch_only_mode = $branch_only_mode; // Release kontrolünü atla
         
         // Plugin bilgilerini al
         $plugin_data = get_file_data($plugin_file, array('Version' => 'Version', 'TextDomain' => 'Text Domain'));
@@ -112,6 +114,11 @@ class GitHub_Plugin_Updater {
      * @return array|false
      */
     private function get_latest_release() {
+        // Branch-only modunda direkt branch'ten kontrol et
+        if ($this->branch_only_mode) {
+            return $this->get_latest_from_branch();
+        }
+        
         // Önce releases API'yi dene (tag'ler)
         $releases_url = sprintf(
             'https://api.github.com/repos/%s/%s/releases/latest',
@@ -235,6 +242,47 @@ class GitHub_Plugin_Updater {
      * @return bool Yeni versiyon varsa true
      */
     private function is_newer_version($current_version, $remote_version) {
+        // Branch-only modunda: Commit SHA'sı farklıysa veya versiyon farklıysa güncelleme var
+        if ($this->branch_only_mode) {
+            // Base versiyonları al (SHA'sız)
+            $current_base = preg_replace('/-[a-f0-9]+$/', '', $current_version);
+            $remote_base = preg_replace('/-[a-f0-9]+$/', '', $remote_version);
+            
+            // Base versiyonları karşılaştır
+            $base_compare = version_compare($current_base, $remote_base);
+            
+            // Base versiyonlar farklıysa, normal karşılaştırma
+            if ($base_compare !== 0) {
+                return $base_compare < 0;
+            }
+            
+            // Base versiyonlar aynıysa, SHA'ları karşılaştır
+            $current_sha = '';
+            $remote_sha = '';
+            
+            if (preg_match('/-([a-f0-9]+)$/', $current_version, $current_matches)) {
+                $current_sha = $current_matches[1];
+            }
+            
+            if (preg_match('/-([a-f0-9]+)$/', $remote_version, $remote_matches)) {
+                $remote_sha = $remote_matches[1];
+            }
+            
+            // SHA'lar farklıysa güncelleme var
+            if (!empty($current_sha) && !empty($remote_sha)) {
+                return $current_sha !== $remote_sha;
+            }
+            
+            // Mevcut versiyonda SHA yok ama remote'da var = güncelleme var
+            if (empty($current_sha) && !empty($remote_sha)) {
+                return true;
+            }
+            
+            // Her ikisinde de SHA yok, base versiyonlar aynı = güncelleme yok
+            return false;
+        }
+        
+        // Normal mod: Release kontrolü
         // Commit SHA'sını kaldır (tire sonrası kısmı)
         $current_base = preg_replace('/-[a-f0-9]+$/', '', $current_version);
         $remote_base = preg_replace('/-[a-f0-9]+$/', '', $remote_version);

@@ -169,6 +169,19 @@ function gsp_register_routes() {
         'callback'            => 'gsp_get_active_pages',
         'permission_callback' => 'gsp_validate_api_key',
     ));
+
+    // Sayfa detayı - Tüm veriler (GET)
+    register_rest_route( 'gsp/v1', '/pages/(?P<id>\d+)', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_page_full',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
 }
 
 // 2. Güvenlik ve API Key Doğrulama Fonksiyonu
@@ -766,6 +779,188 @@ function gsp_get_active_pages( WP_REST_Request $request ) {
         'pages'       => $pages,
         'urls'        => $urls, // URL'ler ayrı array olarak
     ), 200);
+}
+
+// 13.5. Sayfa Detayı - Tüm Veriler Fonksiyonu
+/**
+ * Sayfa/yazının tüm detaylı verilerini döndürür (içerik, meta, Elementor, vs.)
+ * 
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_page_full( WP_REST_Request $request ) {
+    $page_id = intval($request['id']);
+    $post = get_post($page_id);
+    
+    if (!$post) {
+        return new WP_REST_Response(array(
+            'message' => "ID ($page_id) ile sayfa/yazı bulunamadı.",
+        ), 404);
+    }
+    
+    // Temel post bilgileri
+    $page_data = array(
+        'id'                => $post->ID,
+        'title'             => get_the_title($page_id),
+        'slug'              => $post->post_name,
+        'content'           => $post->post_content, // Ham HTML içerik
+        'excerpt'           => $post->post_excerpt,
+        'status'            => $post->post_status,
+        'type'              => $post->post_type,
+        'author'            => array(
+            'id'        => $post->post_author,
+            'name'      => get_the_author_meta('display_name', $post->post_author),
+            'username'  => get_the_author_meta('user_login', $post->post_author),
+        ),
+        'date'              => array(
+            'created'   => $post->post_date,
+            'created_gmt' => $post->post_date_gmt,
+            'modified'  => $post->post_modified,
+            'modified_gmt' => $post->post_modified_gmt,
+        ),
+        'url'               => get_permalink($page_id),
+        'featured_image'    => null,
+        'meta'              => array(),
+        'elementor_data'    => null,
+        'acf_fields'        => array(),
+        'custom_fields'     => array(),
+        'template'          => null,
+        'parent'            => null,
+        'menu_order'        => $post->menu_order,
+    );
+    
+    // Featured Image
+    $featured_image_id = get_post_thumbnail_id($page_id);
+    if ($featured_image_id) {
+        $image_data = wp_get_attachment_image_src($featured_image_id, 'full');
+        $page_data['featured_image'] = array(
+            'id'        => $featured_image_id,
+            'url'       => $image_data ? $image_data[0] : null,
+            'width'     => $image_data ? $image_data[1] : null,
+            'height'    => $image_data ? $image_data[2] : null,
+            'alt'       => get_post_meta($featured_image_id, '_wp_attachment_image_alt', true),
+        );
+    }
+    
+    // Tüm post meta verileri
+    $all_meta = get_post_meta($page_id);
+    foreach ($all_meta as $key => $value) {
+        // WordPress'in internal meta'larını filtrele (opsiyonel)
+        if (strpos($key, '_') === 0 && !in_array($key, array('_elementor_data', '_elementor_css', '_elementor_edit_mode'))) {
+            // Internal meta'ları ayrı bir yerde sakla
+            if (!isset($page_data['meta']['_internal'])) {
+                $page_data['meta']['_internal'] = array();
+            }
+            $page_data['meta']['_internal'][$key] = is_array($value) && count($value) === 1 ? $value[0] : $value;
+        } else {
+            $page_data['meta'][$key] = is_array($value) && count($value) === 1 ? $value[0] : $value;
+        }
+    }
+    
+    // Elementor verileri (eğer Elementor kullanılıyorsa)
+    if (class_exists('\Elementor\Plugin')) {
+        $elementor_data = get_post_meta($page_id, '_elementor_data', true);
+        if ($elementor_data) {
+            // JSON string ise decode et
+            if (is_string($elementor_data)) {
+                $page_data['elementor_data'] = json_decode($elementor_data, true);
+            } else {
+                $page_data['elementor_data'] = $elementor_data;
+            }
+            
+            // Elementor edit mode
+            $page_data['elementor_edit_mode'] = get_post_meta($page_id, '_elementor_edit_mode', true);
+            $page_data['elementor_css'] = get_post_meta($page_id, '_elementor_css', true);
+        }
+    }
+    
+    // ACF (Advanced Custom Fields) verileri (eğer ACF kullanılıyorsa)
+    if (function_exists('get_fields')) {
+        $acf_fields = get_fields($page_id);
+        if ($acf_fields) {
+            $page_data['acf_fields'] = $acf_fields;
+        }
+    }
+    
+    // Custom Fields (genel)
+    $custom_fields = get_post_custom($page_id);
+    foreach ($custom_fields as $key => $value) {
+        // WordPress internal ve Elementor meta'larını atla
+        if (strpos($key, '_') !== 0 || in_array($key, array('_elementor_data', '_elementor_css', '_elementor_edit_mode'))) {
+            $page_data['custom_fields'][$key] = is_array($value) && count($value) === 1 ? $value[0] : $value;
+        }
+    }
+    
+    // Page Template
+    $template = get_page_template_slug($page_id);
+    if ($template) {
+        $page_data['template'] = $template;
+    }
+    
+    // Parent page (eğer varsa)
+    if ($post->post_parent) {
+        $parent = get_post($post->post_parent);
+        if ($parent) {
+            $page_data['parent'] = array(
+                'id'    => $parent->ID,
+                'title' => get_the_title($parent->ID),
+                'slug'  => $parent->post_name,
+                'url'   => get_permalink($parent->ID),
+            );
+        }
+    }
+    
+    // Categories/Tags (eğer post type'ı destekliyorsa)
+    $categories = get_the_category($page_id);
+    if ($categories) {
+        $page_data['categories'] = array();
+        foreach ($categories as $category) {
+            $page_data['categories'][] = array(
+                'id'    => $category->term_id,
+                'name'  => $category->name,
+                'slug'  => $category->slug,
+            );
+        }
+    }
+    
+    $tags = get_the_tags($page_id);
+    if ($tags) {
+        $page_data['tags'] = array();
+        foreach ($tags as $tag) {
+            $page_data['tags'][] = array(
+                'id'    => $tag->term_id,
+                'name'  => $tag->name,
+                'slug'  => $tag->slug,
+            );
+        }
+    }
+    
+    // SEO Meta (Rank Math, Yoast, vs.)
+    $seo_meta = array();
+    
+    // Rank Math SEO
+    if (class_exists('RankMath')) {
+        $seo_meta['rank_math'] = array(
+            'title'         => get_post_meta($page_id, 'rank_math_title', true),
+            'description'  => get_post_meta($page_id, 'rank_math_description', true),
+            'focus_keyword' => get_post_meta($page_id, 'rank_math_focus_keyword', true),
+        );
+    }
+    
+    // Yoast SEO
+    if (class_exists('WPSEO_Options')) {
+        $seo_meta['yoast'] = array(
+            'title'         => get_post_meta($page_id, '_yoast_wpseo_title', true),
+            'description'  => get_post_meta($page_id, '_yoast_wpseo_metadesc', true),
+            'focus_keyword' => get_post_meta($page_id, '_yoast_wpseo_focuskw', true),
+        );
+    }
+    
+    if (!empty($seo_meta)) {
+        $page_data['seo_meta'] = $seo_meta;
+    }
+    
+    return new WP_REST_Response($page_data, 200);
 }
 
 // 14. Google Sheets API ile Import Fonksiyonu
@@ -1432,6 +1627,11 @@ function gsp_connector_settings_content() {
                     <td><code>/pages</code></td>
                     <td><strong>Aktif sayfalar listesi</strong> - Yayınlanmış tüm sayfaları ve URL'lerini döndürür (?per_page=20&page=1&search=...)</td>
                 </tr>
+                <tr style="background-color: #e8f5e9;">
+                    <td><code>GET</code></td>
+                    <td><code>/pages/{id}</code></td>
+                    <td><strong>Sayfa detayı (tüm veriler)</strong> - Sayfa/yazının tüm detaylarını döndürür (içerik, meta, Elementor, ACF, SEO, vs.)</td>
+                </tr>
             </tbody>
         </table>
         
@@ -1669,6 +1869,67 @@ Query Parameters (Opsiyonel):
     "https://example.com/hakkimizda",
     "https://example.com/iletisim"
   ]
+}</code></pre>
+            
+            <h4>9. Sayfa Detayı - Tüm Veriler (GET)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+URL: <?php echo esc_html($api_base_url); ?>pages/123
+(Not: 123 yerine gerçek sayfa ID'sini yazın)
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?></code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği (Kısaltılmış):</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 11px;"><code>{
+  "id": 123,
+  "title": "Test Sayfası",
+  "slug": "test-sayfasi",
+  "content": "&lt;h1&gt;Başlık&lt;/h1&gt;&lt;p&gt;Sayfa içeriği...&lt;/p&gt;",
+  "excerpt": "Sayfa özeti",
+  "status": "publish",
+  "type": "page",
+  "author": {
+    "id": 1,
+    "name": "Admin",
+    "username": "admin"
+  },
+  "date": {
+    "created": "2025-01-15 10:30:00",
+    "modified": "2025-01-20 14:20:00"
+  },
+  "url": "https://example.com/test-sayfasi",
+  "featured_image": {
+    "id": 456,
+    "url": "https://example.com/wp-content/uploads/image.jpg",
+    "width": 1920,
+    "height": 1080,
+    "alt": "Görsel açıklaması"
+  },
+  "meta": {
+    "_elementor_data": "...",
+    "_elementor_edit_mode": "builder"
+  },
+  "elementor_data": [
+    {
+      "id": "...",
+      "elType": "section",
+      "settings": {...},
+      "elements": [...]
+    }
+  ],
+  "acf_fields": {
+    "custom_field_1": "Değer 1",
+    "custom_field_2": "Değer 2"
+  },
+  "custom_fields": {...},
+  "template": "page-template.php",
+  "parent": null,
+  "menu_order": 0,
+  "seo_meta": {
+    "rank_math": {
+      "title": "SEO Başlık",
+      "description": "SEO Açıklama"
+    }
+  }
 }</code></pre>
             
             <h3>✅ Başarılı Yanıt Örneği</h3>

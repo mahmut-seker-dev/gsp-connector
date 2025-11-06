@@ -133,6 +133,13 @@ function gsp_register_routes() {
         'permission_callback' => 'gsp_validate_api_key',
     ));
 
+    // Sayfa/Yazı İçeriğini Güncelleme (POST)
+    register_rest_route( 'gsp/v1', '/update-page-content', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_update_page_content',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
     // Google Sheets CSV/JSON Toplu Import (POST)
     register_rest_route( 'gsp/v1', '/products/bulk-import', array(
         'methods'             => 'POST',
@@ -523,6 +530,64 @@ function gsp_sync_product_price( WP_REST_Request $request ) {
         'message' => "Ürün fiyatı $new_price olarak güncellendi.", 
         'sku' => $sku, 
         'new_price' => $new_price 
+    ), 200 );
+}
+
+// 10.5. Sayfa/Yazı İçeriği Güncelleme Fonksiyonu
+/**
+ * REST API ile sayfa veya yazının içeriğini ID'ye göre günceller.
+ * 
+ * @param WP_REST_Request $request Laravel'den gelen isteği içerir.
+ * @return WP_REST_Response
+ */
+function gsp_update_page_content( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    $post_id = intval( $data['post_id'] ?? 0 );
+    $new_content = $data['content'] ?? ''; // Yeni HTML içeriği
+
+    if ( $post_id <= 0 || empty($new_content) ) {
+        return new WP_REST_Response( array( 
+            'message' => 'Eksik veya geçersiz Post ID veya içerik.',
+            'required_fields' => array('post_id', 'content')
+        ), 400 );
+    }
+
+    // Post'un varlığını kontrol et
+    $post = get_post( $post_id );
+    if ( !$post ) {
+        return new WP_REST_Response( array( 
+            'message' => "ID ($post_id) ile sayfa/yazı bulunamadı." 
+        ), 404 );
+    }
+
+    // İçeriği sanitize et (HTML içeriği için wp_kses_post kullan)
+    $sanitized_content = wp_kses_post($new_content);
+
+    // Sayfa/Yazı içeriğini güncelleme
+    $update_result = wp_update_post( array(
+        'ID'           => $post_id,
+        'post_content' => wp_slash($sanitized_content), // wp_slash() veritabanı kaydı için gereklidir
+    ), true ); // true, WP_Error döndürülmesini sağlar
+
+    if ( is_wp_error( $update_result ) ) {
+        return new WP_REST_Response( array( 
+            'message' => 'İçerik güncellenirken WordPress hatası oluştu.',
+            'error_details' => $update_result->get_error_message(),
+            'error_code' => $update_result->get_error_code()
+        ), 500 );
+    }
+
+    // Güncellenmiş post bilgilerini al
+    $updated_post = get_post($post_id);
+
+    // Başarılı yanıt
+    return new WP_REST_Response( array( 
+        'message' => "Sayfa/Yazı (ID: $post_id) içeriği başarıyla güncellendi.", 
+        'post_id' => $post_id,
+        'post_title' => get_the_title($post_id),
+        'post_type' => $updated_post->post_type,
+        'post_status' => $updated_post->post_status,
+        'updated_at' => $updated_post->post_modified
     ), 200 );
 }
 
@@ -1313,6 +1378,11 @@ function gsp_connector_settings_content() {
                     <td><code>/sync-product-price</code></td>
                     <td>SKU ile fiyat güncelle ({"sku": "ABC123", "new_price": 99.99})</td>
                 </tr>
+                <tr>
+                    <td><code>POST</code></td>
+                    <td><code>/update-page-content</code></td>
+                    <td>Sayfa/Yazı içeriğini güncelle ({"post_id": 123, "content": "Yeni HTML içeriği"})</td>
+                </tr>
                 <tr style="background-color: #f0f8ff;">
                     <td><code>POST</code></td>
                     <td><code>/products/bulk-import</code></td>
@@ -1479,7 +1549,30 @@ Body (raw JSON):
   "new_price": 89.99
 }</code></pre>
             
-            <h4>6. Toplu Import (POST)</h4>
+            <h4>6. Sayfa/Yazı İçeriği Güncelleme (POST)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+URL: <?php echo esc_html($api_base_url); ?>update-page-content
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
+
+Body (raw JSON):
+{
+  "post_id": 123,
+  "content": "<h1>Yeni Başlık</h1><p>Bu sayfa içeriği GSP Laravel panelinden güncellenmiştir.</p>"
+}</code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "message": "Sayfa/Yazı (ID: 123) içeriği başarıyla güncellendi.",
+  "post_id": 123,
+  "post_title": "Örnek Sayfa",
+  "post_type": "page",
+  "post_status": "publish",
+  "updated_at": "2025-01-20 15:30:00"
+}</code></pre>
+            
+            <h4>7. Toplu Import (POST)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
 URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
 
@@ -1505,7 +1598,7 @@ Body (raw JSON):
   ]
 }</code></pre>
             
-            <h4>7. Aktif Sayfalar Listesi (GET)</h4>
+            <h4>8. Aktif Sayfalar Listesi (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>pages
 

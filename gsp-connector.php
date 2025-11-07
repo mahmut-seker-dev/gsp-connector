@@ -170,6 +170,21 @@ function gsp_register_routes() {
         'permission_callback' => 'gsp_validate_api_key',
     ));
 
+    // Hazırlık kontrolü (GET)
+    register_rest_route( 'gsp/v1', '/ready', array(
+        'methods'             => 'GET',
+        'callback'            => function() {
+            return new WP_REST_Response(
+                array(
+                    'status'  => 'live',
+                    'message' => 'GSP Connector aktif ve API iletişimi hazır.'
+                ),
+                200
+            );
+        },
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
     // Aktif sayfalar listesi (GET)
     register_rest_route( 'gsp/v1', '/pages', array(
         'methods'             => 'GET',
@@ -1752,6 +1767,11 @@ function gsp_connector_settings_content() {
                     <td><code>/test</code></td>
                     <td><strong>Bağlantı testi</strong> - API'nin çalışıp çalışmadığını kontrol eder</td>
                 </tr>
+                <tr style="background-color: #fff3cd;">
+                    <td><code>GET</code></td>
+                    <td><code>/ready</code></td>
+                    <td><strong>Hazırlık kontrolü</strong> - GSP Connector ve API iletişiminin hazır olduğunu doğrular</td>
+                </tr>
                 <tr style="background-color: #e8f5e9;">
                     <td><code>GET</code></td>
                     <td><code>/pages</code></td>
@@ -1975,6 +1995,18 @@ Body (raw JSON):
       "stock_quantity": 50
     }
   ]
+}</code></pre>
+            
+            <h4>8.5 Hazırlık Kontrolü (GET)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+URL: <?php echo esc_html($api_base_url); ?>ready
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?></code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "status": "live",
+  "message": "GSP Connector aktif ve API iletişimi hazır."
 }</code></pre>
             
             <h4>9. Aktif Sayfalar Listesi (GET)</h4>

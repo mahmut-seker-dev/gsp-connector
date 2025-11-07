@@ -135,6 +135,13 @@ function gsp_register_routes() {
         'permission_callback' => 'gsp_validate_api_key',
     ));
 
+    // Önbelleği temizleme (POST)
+    register_rest_route( 'gsp/v1', '/purge-cache', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_purge_litespeed_cache',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
     // Sayfa/Yazı İçeriğini Güncelleme (POST)
     register_rest_route( 'gsp/v1', '/update-page-content', array(
         'methods'             => 'POST',
@@ -1755,6 +1762,11 @@ function gsp_connector_settings_content() {
                     <td><code>/pages/{id}</code></td>
                     <td><strong>Sayfa detayı (tüm veriler)</strong> - Sayfa/yazının tüm detaylarını döndürür (içerik, meta, Elementor, ACF, SEO, vs.)</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>POST</code></td>
+                    <td><code>/purge-cache</code></td>
+                    <td><strong>LiteSpeed önbelleği temizleme</strong> - LiteSpeed Cache eklentisinin tüm önbelleğini temizler</td>
+                </tr>
             </tbody>
         </table>
         
@@ -1924,13 +1936,28 @@ Body (raw JSON):
   "updated_at": "2025-01-20 15:30:00"
 }</code></pre>
             
-            <h4>7. Toplu Import (POST)</h4>
+            <h4>7. LiteSpeed Cache Temizleme (POST)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
-URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
+URL: <?php echo esc_html($api_base_url); ?>purge-cache
 
 Headers:
-  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
-  Content-Type: application/json
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?></code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "message": "Tüm LiteSpeed Cache önbelleği başarıyla temizlendi."
+}</code></pre>
+            <p><strong>⚠️ Hata Yanıt Örneği (LiteSpeed aktif değilse):</strong></p>
+            <pre style="background: #f8d7da; padding: 15px; border: 1px solid #f5c6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "message": "LiteSpeed Cache eklentisi aktif değil."
+}</code></pre>
+            
+            <h4>8. Toplu Import (POST)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+ URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
+ 
+ Headers:
+   X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+   Content-Type: application/json
 
 Body (raw JSON):
 {
@@ -1950,17 +1977,17 @@ Body (raw JSON):
   ]
 }</code></pre>
             
-            <h4>8. Aktif Sayfalar Listesi (GET)</h4>
+            <h4>9. Aktif Sayfalar Listesi (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
-URL: <?php echo esc_html($api_base_url); ?>pages
+ URL: <?php echo esc_html($api_base_url); ?>pages
 
-Headers:
-  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+ Headers:
+   X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
 
-Query Parameters (Opsiyonel):
-  ?per_page=20    - Sayfa başına kayıt sayısı (varsayılan: tümü)
-  ?page=1         - Sayfa numarası
-  ?search=test    - Arama terimi</code></pre>
+ Query Parameters (Opsiyonel):
+   ?per_page=20    - Sayfa başına kayıt sayısı (varsayılan: tümü)
+   ?page=1         - Sayfa numarası
+   ?search=test    - Arama terimi</code></pre>
             <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
             <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
   "total_pages": 15,
@@ -1994,7 +2021,7 @@ Query Parameters (Opsiyonel):
   ]
 }</code></pre>
             
-            <h4>9. Sayfa Detayı - Tüm Veriler (GET)</h4>
+            <h4>10. Sayfa Detayı - Tüm Veriler (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>pages/123
 (Not: 123 yerine gerçek sayfa ID'sini yazın)
@@ -2146,4 +2173,34 @@ $response = Http::withHeaders([
         </div>
     </div>
     <?php
+}
+
+// 10.4. LiteSpeed Cache Önbellek Temizleme
+/**
+ * Uzaktan gelen istekle LiteSpeed Cache önbelleğini temizler.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_purge_litespeed_cache( WP_REST_Request $request ) {
+    if ( ! defined( 'LSCWP_V' ) ) {
+        return new WP_REST_Response(
+            array( 'message' => 'LiteSpeed Cache eklentisi aktif değil.' ),
+            404
+        );
+    }
+
+    if ( function_exists( 'do_action' ) ) {
+        do_action( 'litespeed_purge_all' );
+
+        return new WP_REST_Response(
+            array( 'message' => 'Tüm LiteSpeed Cache önbelleği başarıyla temizlendi.' ),
+            200
+        );
+    }
+
+    return new WP_REST_Response(
+        array( 'message' => 'Önbellek temizleme fonksiyonu bulunamadı.' ),
+        500
+    );
 }

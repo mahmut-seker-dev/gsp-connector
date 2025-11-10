@@ -23,6 +23,10 @@ class GitHub_Plugin_Updater {
     private $cache_duration;
     private $current_version;
     private $branch_only_mode; // Release kontrolünü atla, direkt branch'ten güncelle
+    private $base_version;
+    private $installed_build;
+    private $last_commit_build;
+    private $last_commit_sha;
     
     /**
      * Constructor
@@ -42,7 +46,22 @@ class GitHub_Plugin_Updater {
         // Plugin bilgilerini al
         $plugin_data = get_file_data($plugin_file, array('Version' => 'Version', 'TextDomain' => 'Text Domain'));
         $this->plugin_slug = basename(dirname($plugin_file));
-        $this->current_version = $plugin_data['Version'];
+        $this->base_version = $plugin_data['Version'];
+        $this->installed_build = '';
+        $this->last_commit_build = null;
+        $this->last_commit_sha = null;
+        
+        if ($this->branch_only_mode) {
+            $stored_build = get_option($this->get_build_option_key(), '');
+            if (!empty($stored_build)) {
+                $this->installed_build = $stored_build;
+                $this->current_version = $this->base_version . '.' . $stored_build;
+            } else {
+                $this->current_version = $this->base_version;
+            }
+        } else {
+            $this->current_version = $this->base_version;
+        }
         
         // Cache ayarları
         $this->cache_key = 'gsp_github_update_check_' . md5($this->plugin_slug);
@@ -70,6 +89,9 @@ class GitHub_Plugin_Updater {
             return $transient;
         }
         
+        // Installed version'ı transient'e yansıt
+        $transient->checked[$this->plugin_file] = $this->current_version;
+        
         // Cache kontrolü
         $cached = get_transient($this->cache_key);
         if ($cached !== false && is_array($cached)) {
@@ -95,6 +117,14 @@ class GitHub_Plugin_Updater {
                 'requires' => '5.0',
                 'requires_php' => '7.4',
             );
+            if (isset($release_info['commit_build'])) {
+                $update_data['commit_build'] = $release_info['commit_build'];
+            }
+            if (isset($release_info['commit_sha'])) {
+                $update_data['commit_sha'] = $release_info['commit_sha'];
+            }
+            $this->last_commit_build = $update_data['commit_build'] ?? null;
+            $this->last_commit_sha = $update_data['commit_sha'] ?? null;
             
             // Cache'e kaydet
             set_transient($this->cache_key, $update_data, $this->cache_duration);
@@ -207,8 +237,15 @@ class GitHub_Plugin_Updater {
             return false;
         }
         
-        // Commit SHA'sının ilk 7 karakterini versiyon olarak kullan
-        $version = $this->current_version . '-' . substr($commit_data['sha'], 0, 7);
+        $commit_sha = substr($commit_data['sha'], 0, 40);
+        $commit_short = substr($commit_sha, 0, 7);
+        $commit_date = isset($commit_data['commit']['committer']['date']) ? $commit_data['commit']['committer']['date'] : null;
+        $commit_build = $commit_date ? gmdate('YmdHis', strtotime($commit_date)) : gmdate('YmdHis');
+        
+        $remote_base_version = $this->branch_only_mode ? $this->get_remote_plugin_version() : $this->base_version;
+        
+        // Build numarasıyla versiyon oluştur
+        $version = $remote_base_version . '.' . $commit_build;
         $zip_url = sprintf(
             'https://github.com/%s/%s/archive/%s.zip',
             $this->github_username,
@@ -220,7 +257,10 @@ class GitHub_Plugin_Updater {
             'version' => $version,
             'url' => sprintf('https://github.com/%s/%s', $this->github_username, $this->github_repo),
             'package' => $zip_url,
-            'release_notes' => ''
+            'release_notes' => '',
+            'commit_build' => $commit_build,
+            'commit_sha' => $commit_sha,
+            'base_version' => $remote_base_version,
         );
     }
     
@@ -242,44 +282,8 @@ class GitHub_Plugin_Updater {
      * @return bool Yeni versiyon varsa true
      */
     private function is_newer_version($current_version, $remote_version) {
-        // Branch-only modunda: Commit SHA'sı farklıysa veya versiyon farklıysa güncelleme var
         if ($this->branch_only_mode) {
-            // Base versiyonları al (SHA'sız)
-            $current_base = preg_replace('/-[a-f0-9]+$/', '', $current_version);
-            $remote_base = preg_replace('/-[a-f0-9]+$/', '', $remote_version);
-            
-            // Base versiyonları karşılaştır
-            $base_compare = version_compare($current_base, $remote_base);
-            
-            // Base versiyonlar farklıysa, normal karşılaştırma
-            if ($base_compare !== 0) {
-                return $base_compare < 0;
-            }
-            
-            // Base versiyonlar aynıysa, SHA'ları karşılaştır
-            $current_sha = '';
-            $remote_sha = '';
-            
-            if (preg_match('/-([a-f0-9]+)$/', $current_version, $current_matches)) {
-                $current_sha = $current_matches[1];
-            }
-            
-            if (preg_match('/-([a-f0-9]+)$/', $remote_version, $remote_matches)) {
-                $remote_sha = $remote_matches[1];
-            }
-            
-            // SHA'lar farklıysa güncelleme var
-            if (!empty($current_sha) && !empty($remote_sha)) {
-                return $current_sha !== $remote_sha;
-            }
-            
-            // Mevcut versiyonda SHA yok ama remote'da var = güncelleme var
-            if (empty($current_sha) && !empty($remote_sha)) {
-                return true;
-            }
-            
-            // Her ikisinde de SHA yok, base versiyonlar aynı = güncelleme yok
-            return false;
+            return version_compare($current_version, $remote_version, '<');
         }
         
         // Normal mod: Release kontrolü
@@ -415,6 +419,21 @@ class GitHub_Plugin_Updater {
         // Cache'i temizle
         delete_transient($this->cache_key);
         
+        if ($this->branch_only_mode) {
+            if ($this->last_commit_build) {
+                update_option($this->get_build_option_key(), $this->last_commit_build);
+                $this->installed_build = $this->last_commit_build;
+            }
+            if ($this->last_commit_sha) {
+                update_option($this->get_sha_option_key(), $this->last_commit_sha);
+            }
+            // Güncel versiyonu yeniden ayarla
+            $this->current_version = $this->base_version;
+            if (!empty($this->installed_build)) {
+                $this->current_version .= '.' . $this->installed_build;
+            }
+        }
+        
         // WordPress güncelleme cache'ini de temizle
         delete_site_transient('update_plugins');
         
@@ -468,6 +487,76 @@ class GitHub_Plugin_Updater {
             </p>
         </div>
         <?php
+    }
+
+    /**
+     * Remote plugin sürümünü elde eder (branch-only modu için)
+     *
+     * @return string
+     */
+    private function get_remote_plugin_version() {
+        $cache_key = 'gsp_remote_version_' . md5($this->plugin_slug . $this->github_branch);
+        $cached = get_transient($cache_key);
+        if ($cached) {
+            return $cached;
+        }
+        
+        $possible_paths = array(
+            plugin_basename($this->plugin_file),
+            basename($this->plugin_file)
+        );
+        
+        foreach ($possible_paths as $relative_path) {
+            $relative_path = ltrim($relative_path, '/');
+            $url = sprintf('https://raw.githubusercontent.com/%s/%s/%s/%s',
+                $this->github_username,
+                $this->github_repo,
+                $this->github_branch,
+                $relative_path
+            );
+            $response = wp_remote_get($url, array(
+                'timeout' => 15,
+                'sslverify' => true,
+            ));
+            if (is_wp_error($response)) {
+                continue;
+            }
+            if (wp_remote_retrieve_response_code($response) !== 200) {
+                continue;
+            }
+            $body = wp_remote_retrieve_body($response);
+            if (empty($body)) {
+                continue;
+            }
+            $version = $this->extract_version_from_contents($body);
+            if ($version) {
+                set_transient($cache_key, $version, 5 * MINUTE_IN_SECONDS);
+                return $version;
+            }
+        }
+        
+        return $this->base_version;
+    }
+
+    /**
+     * Plugin dosyası içeriğinden versiyon bilgisini çıkartır
+     *
+     * @param string $contents
+     * @return string|null
+     */
+    private function extract_version_from_contents($contents) {
+        if (preg_match('/^\s*Version:\s*(.+)$/mi', $contents, $matches)) {
+            return trim($matches[1]);
+        }
+        return null;
+    }
+
+    private function get_build_option_key() {
+        return 'gsp_branch_build_' . $this->plugin_slug;
+    }
+
+    private function get_sha_option_key() {
+        return 'gsp_branch_sha_' . $this->plugin_slug;
     }
 }
 

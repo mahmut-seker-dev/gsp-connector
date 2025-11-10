@@ -5,7 +5,7 @@
  * WordPress eklentileri için GitHub üzerinden otomatik güncelleme kontrolü sağlar.
  * 
  * @package GSP_Connector
- * @version 1.0.442
+ * @version 1.0.45
  */
 
 if (!defined('ABSPATH')) {
@@ -421,6 +421,26 @@ class GitHub_Plugin_Updater {
         // Cache'i temizle
         delete_transient($this->cache_key);
         
+        $destination = trailingslashit($result['destination']);
+        $expected_directory = trailingslashit(WP_PLUGIN_DIR) . $this->plugin_slug . '/';
+
+        if (trailingslashit($destination) !== trailingslashit($expected_directory)) {
+            global $wp_filesystem;
+            if (empty($wp_filesystem)) {
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+                WP_Filesystem();
+            }
+
+            // Eğer hedefte eski klasör varsa sil
+            if ($wp_filesystem->is_dir($expected_directory)) {
+                $wp_filesystem->delete($expected_directory, true);
+            }
+
+            // Yeni klasörü beklenen isimle taşı
+            $wp_filesystem->move($destination, $expected_directory, true);
+            $result['destination'] = $expected_directory;
+        }
+
         if ($this->branch_only_mode) {
             if ($this->last_commit_build) {
                 update_option($this->get_build_option_key(), $this->last_commit_build);

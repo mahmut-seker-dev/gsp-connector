@@ -225,6 +225,13 @@ function gsp_register_routes() {
         'callback'            => 'gsp_toggle_plugin_status',
         'permission_callback' => 'gsp_validate_api_key',
     ));
+
+    // Eklenti güncellemesi (POST)
+    register_rest_route( 'gsp/v1', '/update-plugin', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_update_plugin_remotely',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
 }
 
 // 2. Güvenlik ve API Key Doğrulama Fonksiyonu
@@ -1823,6 +1830,11 @@ function gsp_connector_settings_content() {
                     <td><code>/toggle-plugin</code></td>
                     <td><strong>Eklenti durumunu değiştir</strong> - Belirtilen eklentiyi etkinleştirir veya devre dışı bırakır</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>POST</code></td>
+                    <td><code>/update-plugin</code></td>
+                    <td><strong>Eklenti güncelle</strong> - Belirtilen eklenti için WordPress güncelleme mekanizmasını tetikler</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2080,34 +2092,25 @@ Body (raw JSON):
   "message": "Eklenti (woocommerce/woocommerce.php) başarıyla devre dışı bırakıldı."
 }</code></pre>
             
-            <h4>11. Toplu Import (POST)</h4>
+            <h4>11. Eklenti Güncelleme (POST)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
- URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
- 
- Headers:
-   X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
-   Content-Type: application/json
+URL: <?php echo esc_html($api_base_url); ?>update-plugin
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
 
 Body (raw JSON):
 {
-  "products": [
-    {
-      "sku": "PROD-001",
-      "name": "Ürün 1",
-      "regular_price": "100",
-      "stock_quantity": 25
-    },
-    {
-      "sku": "PROD-002",
-      "name": "Ürün 2",
-      "regular_price": "200",
-      "stock_quantity": 50
-    }
-  ]
+  "plugin_file": "gsp-connector/gsp-connector.php"
+}</code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "message": "Eklenti (gsp-connector/gsp-connector.php) başarıyla güncellendi."
 }</code></pre>
             
             <h4>11.5 Hazırlık Kontrolü (GET)</h4>
-            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+            <pre style="background: #fff; padding: 15px; border: 1px solid  #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>ready
 
 Headers:
@@ -2445,4 +2448,52 @@ function gsp_toggle_plugin_status( WP_REST_Request $request ) {
     }
 
     return new WP_REST_Response( array( 'message' => "Eklenti ({$plugin_file}) başarıyla {$message}." ), 200 );
+}
+
+// 10.8. Eklenti Güncelleme Fonksiyonu
+/**
+ * Uzaktan gelen istekle bir eklentiyi günceller/kurar.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_update_plugin_remotely( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    $plugin_file = sanitize_text_field( $data['plugin_file'] ?? '' );
+
+    if ( empty( $plugin_file ) ) {
+        return new WP_REST_Response( array( 'message' => 'Eksik eklenti dosya adı.' ), 400 );
+    }
+
+    require_once ABSPATH . 'wp-admin/includes/file.php';
+    require_once ABSPATH . 'wp-admin/includes/misc.php';
+    require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
+    require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+
+    if ( ! class_exists( 'WP_Upgrader' ) ) {
+        return new WP_REST_Response( array( 'message' => 'WordPress upgrader sınıfları yüklenemedi.' ), 500 );
+    }
+
+    if ( ! class_exists( 'Automatic_Upgrader_Skin', false ) ) {
+        class Automatic_Upgrader_Skin extends WP_Upgrader_Skin {
+            public function header() {}
+            public function footer() {}
+            public function feedback( $string ) {}
+        }
+    }
+
+    ob_start();
+    $upgrader = new Plugin_Upgrader( new Automatic_Upgrader_Skin() );
+    $result   = $upgrader->upgrade( $plugin_file );
+    ob_end_clean();
+
+    if ( is_wp_error( $result ) ) {
+        return new WP_REST_Response( array( 'message' => 'Eklenti güncelleme hatası: ' . $result->get_error_message() ), 500 );
+    }
+
+    if ( is_null( $result ) ) {
+        return new WP_REST_Response( array( 'message' => 'Eklenti zaten güncel veya güncelleme kaynağı bulunamadı.' ), 200 );
+    }
+
+    return new WP_REST_Response( array( 'message' => "Eklenti ({$plugin_file}) başarıyla güncellendi." ), 200 );
 }

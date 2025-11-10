@@ -1315,12 +1315,29 @@ function gsp_import_from_google_sheets( WP_REST_Request $request ) {
 }
 
 // GitHub versiyon kontrolü yardımcı fonksiyonu
-function gsp_check_github_version($username, $repo, $branch = 'main') {
-    $cache_key = 'gsp_github_version_check_' . md5($username . $repo);
+function gsp_check_github_version($username, $repo, $branch = 'main', $branch_only_mode = false) {
+    $cache_key = 'gsp_github_version_check_' . md5($username . $repo . $branch . ($branch_only_mode ? '_branch' : '_release'));
     $cached = get_transient($cache_key);
     
     if ($cached !== false) {
         return $cached;
+    }
+    
+    if ($branch_only_mode) {
+        $remote_version = gsp_fetch_remote_plugin_version($username, $repo, $branch);
+        $commit_info    = gsp_fetch_latest_commit_info($username, $repo, $branch);
+
+        if ($remote_version && $commit_info) {
+            $build   = $commit_info['build'];
+            $version = $remote_version . '.' . $build;
+            set_transient($cache_key, $version, 10 * MINUTE_IN_SECONDS);
+            return $version;
+        }
+
+        if ($remote_version) {
+            set_transient($cache_key, $remote_version, 10 * MINUTE_IN_SECONDS);
+            return $remote_version;
+        }
     }
     
     // Önce releases API'yi dene
@@ -1384,6 +1401,103 @@ function gsp_check_github_version($username, $repo, $branch = 'main') {
     return null;
 }
 
+function gsp_fetch_remote_plugin_version($username, $repo, $branch = 'main') {
+    $cache_key = 'gsp_remote_plugin_version_' . md5($username . $repo . $branch);
+    $cached = get_transient($cache_key);
+    if ($cached !== false) {
+        return $cached;
+    }
+
+    $plugin_basename = plugin_basename(__FILE__);
+    $possible_paths = array(
+        $plugin_basename,
+        trim(dirname($plugin_basename)) !== '.' ? trim(dirname($plugin_basename), '/') . '/' . basename($plugin_basename) : basename($plugin_basename)
+    );
+
+    foreach ($possible_paths as $relative_path) {
+        $relative_path = ltrim($relative_path, '/');
+        $raw_url = sprintf(
+            'https://raw.githubusercontent.com/%s/%s/%s/%s',
+            $username,
+            $repo,
+            $branch,
+            $relative_path
+        );
+
+        $response = wp_remote_get($raw_url, array(
+            'timeout' => 10,
+            'sslverify' => true,
+        ));
+
+        if (is_wp_error($response)) {
+            continue;
+        }
+
+        if (wp_remote_retrieve_response_code($response) !== 200) {
+            continue;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        if (empty($body)) {
+            continue;
+        }
+
+        if (preg_match('/^\s*Version:\s*(.+)$/mi', $body, $matches)) {
+            $version = trim($matches[1]);
+            set_transient($cache_key, $version, 30 * MINUTE_IN_SECONDS);
+            return $version;
+        }
+    }
+
+    return null;
+}
+
+function gsp_fetch_latest_commit_info($username, $repo, $branch = 'main') {
+    $cache_key = 'gsp_latest_commit_info_' . md5($username . $repo . $branch);
+    $cached = get_transient($cache_key);
+    if ($cached !== false) {
+        return $cached;
+    }
+
+    $branch_url = sprintf(
+        'https://api.github.com/repos/%s/%s/commits/%s',
+        $username,
+        $repo,
+        $branch
+    );
+
+    $response = wp_remote_get($branch_url, array(
+        'timeout' => 10,
+        'headers' => array(
+            'Accept' => 'application/vnd.github.v3+json',
+            'User-Agent' => 'WordPress-GSP-Connector'
+        ),
+        'sslverify' => true
+    ));
+
+    if (is_wp_error($response)) {
+        return null;
+    }
+
+    $commit_data = json_decode(wp_remote_retrieve_body($response), true);
+
+    if (empty($commit_data['sha'])) {
+        return null;
+    }
+
+    $commit_date = isset($commit_data['commit']['committer']['date']) ? $commit_data['commit']['committer']['date'] : null;
+    $build       = $commit_date ? gmdate('YmdHis', strtotime($commit_date)) : gmdate('YmdHis');
+
+    $info = array(
+        'sha'   => substr($commit_data['sha'], 0, 40),
+        'build' => $build,
+    );
+
+    set_transient($cache_key, $info, 10 * MINUTE_IN_SECONDS);
+
+    return $info;
+}
+
 // 4. Ayarlar Sayfası: Adminin API Secret Key'i panelle girmesi için
 add_action('admin_menu', 'gsp_connector_settings_page');
 
@@ -1431,7 +1545,7 @@ function gsp_connector_settings_content() {
     $latest_version = null;
     $update_available = false;
     if (!empty($github_username) && !empty($github_repo)) {
-        $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch);
+        $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch, $branch_only_mode);
         if ($latest_version && version_compare($current_version, $latest_version, '<')) {
             $update_available = true;
         }
@@ -1450,7 +1564,7 @@ function gsp_connector_settings_content() {
         if (!empty($github_username) && !empty($github_repo)) {
             // Cache'i temizle
             delete_transient('gsp_github_version_check_' . md5($github_username . $github_repo));
-            $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch);
+            $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch, $branch_only_mode);
             if ($latest_version && version_compare($current_version, $latest_version, '<')) {
                 $update_available = true;
                 echo '<div class="notice notice-info is-dismissible"><p>Yeni versiyon mevcut: <strong>' . esc_html($latest_version) . '</strong></p></div>';

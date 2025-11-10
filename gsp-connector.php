@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.44
+Version: 1.0.441
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -2379,7 +2379,7 @@ function gsp_get_admin_details( WP_REST_Request $request ) {
 
 // 10.6. Sistem ve Eklenti Bilgileri
 /**
- * PHP sürümü, WP sürümü ve kurulu eklentilerin listesini döndürür.
+ * PHP sürümü, WP sürümü ve kurulu eklentilerin güncelleme durumunu döndürür.
  *
  * @param WP_REST_Request $request
  * @return WP_REST_Response
@@ -2389,16 +2389,28 @@ function gsp_get_system_info( WP_REST_Request $request ) {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
     }
 
-    $all_plugins   = get_plugins();
+    $update_plugins = get_site_transient( 'update_plugins' );
+    $all_plugins    = get_plugins();
     $active_plugins = get_option( 'active_plugins', array() );
-    $plugin_list   = array();
+
+    $plugin_list = array();
 
     foreach ( $all_plugins as $plugin_file => $plugin_data ) {
+        $update_available = false;
+        $latest_version   = $plugin_data['Version'];
+
+        if ( isset( $update_plugins->response[ $plugin_file ] ) ) {
+            $update_available = true;
+            $latest_version   = $update_plugins->response[ $plugin_file ]->new_version;
+        }
+
         $plugin_list[] = array(
-            'name'    => $plugin_data['Name'] ?? $plugin_file,
-            'version' => $plugin_data['Version'] ?? 'N/A',
-            'status'  => in_array( $plugin_file, $active_plugins, true ) ? 'Active' : 'Inactive',
-            'file'    => $plugin_file,
+            'name'             => $plugin_data['Name'] ?? $plugin_file,
+            'version'          => $plugin_data['Version'] ?? 'N/A',
+            'plugin_file'      => $plugin_file,
+            'status'           => in_array( $plugin_file, $active_plugins, true ) ? 'Active' : 'Inactive',
+            'update_available' => $update_available,
+            'latest_version'   => $latest_version,
         );
     }
 
@@ -2409,7 +2421,7 @@ function gsp_get_system_info( WP_REST_Request $request ) {
     );
 
     return new WP_REST_Response( array(
-        'message' => 'Sistem bilgileri başarıyla çekildi.',
+        'message' => 'Sistem ve güncelleme bilgileri başarıyla çekildi.',
         'data'    => $system_info,
     ), 200 );
 }

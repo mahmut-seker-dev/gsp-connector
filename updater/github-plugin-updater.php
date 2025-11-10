@@ -15,6 +15,7 @@ if (!defined('ABSPATH')) {
 class GitHub_Plugin_Updater {
     
     private $plugin_file;
+    private $plugin_basename;
     private $plugin_slug;
     private $github_username;
     private $github_repo;
@@ -38,6 +39,7 @@ class GitHub_Plugin_Updater {
      */
     public function __construct($plugin_file, $github_username, $github_repo, $github_branch = 'main', $branch_only_mode = false) {
         $this->plugin_file = $plugin_file;
+        $this->plugin_basename = plugin_basename($plugin_file);
         $this->github_username = $github_username;
         $this->github_repo = $github_repo;
         $this->github_branch = $github_branch;
@@ -85,18 +87,18 @@ class GitHub_Plugin_Updater {
      */
     public function check_for_update($transient) {
         // Eklenti yüklü değilse veya transient boşsa
-        if (empty($transient->checked) || !isset($transient->checked[$this->plugin_file])) {
+        if (empty($transient->checked) || !isset($transient->checked[$this->plugin_basename])) {
             return $transient;
         }
         
         // Installed version'ı transient'e yansıt
-        $transient->checked[$this->plugin_file] = $this->current_version;
+        $transient->checked[$this->plugin_basename] = $this->current_version;
         
         // Cache kontrolü
         $cached = get_transient($this->cache_key);
         if ($cached !== false && is_array($cached)) {
             if (!empty($cached['new_version']) && $this->is_newer_version($this->current_version, $cached['version'])) {
-                $transient->response[$this->plugin_file] = (object) $cached;
+                $transient->response[$this->plugin_basename] = (object) $cached;
             }
             return $transient;
         }
@@ -108,7 +110,7 @@ class GitHub_Plugin_Updater {
         if ($release_info && $this->is_newer_version($this->current_version, $release_info['version'])) {
             $update_data = array(
                 'slug' => $this->plugin_slug,
-                'plugin' => $this->plugin_file,
+                'plugin' => $this->plugin_basename,
                 'new_version' => $release_info['version'],
                 'version' => $release_info['version'],
                 'url' => $release_info['url'],
@@ -129,7 +131,7 @@ class GitHub_Plugin_Updater {
             // Cache'e kaydet
             set_transient($this->cache_key, $update_data, $this->cache_duration);
             
-            $transient->response[$this->plugin_file] = (object) $update_data;
+            $transient->response[$this->plugin_basename] = (object) $update_data;
         } else {
             // Güncelleme yok, cache'e kaydet
             set_transient($this->cache_key, array('new_version' => false), $this->cache_duration);
@@ -366,7 +368,7 @@ class GitHub_Plugin_Updater {
      */
     public function upgrader_source_selection($source, $remote_source, $upgrader, $hook_extra) {
         // Sadece bu eklenti için çalış
-        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_file) {
+        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_basename) {
             return $source;
         }
         
@@ -412,7 +414,7 @@ class GitHub_Plugin_Updater {
      * @return array
      */
     public function post_install($response, $hook_extra, $result) {
-        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_file) {
+        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_basename) {
             return $response;
         }
         
@@ -469,8 +471,8 @@ class GitHub_Plugin_Updater {
      */
     private function show_update_notice($update_data) {
         $update_url = wp_nonce_url(
-            admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($this->plugin_file)),
-            'upgrade-plugin_' . $this->plugin_file
+            admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($this->plugin_basename)),
+            'upgrade-plugin_' . $this->plugin_basename
         );
         
         ?>
@@ -502,7 +504,7 @@ class GitHub_Plugin_Updater {
         }
         
         $possible_paths = array(
-            plugin_basename($this->plugin_file),
+            $this->plugin_basename,
             basename($this->plugin_file)
         );
         

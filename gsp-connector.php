@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.5.1
+Version: 1.0.51
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */

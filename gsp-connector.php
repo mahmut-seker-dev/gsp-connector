@@ -211,6 +211,13 @@ function gsp_register_routes() {
         'callback'            => 'gsp_get_admin_details',
         'permission_callback' => 'gsp_validate_api_key',
     ));
+
+    // Sistem bilgileri (GET)
+    register_rest_route( 'gsp/v1', '/get-system-info', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_system_info',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
 }
 
 // 2. Güvenlik ve API Key Doğrulama Fonksiyonu
@@ -1799,6 +1806,11 @@ function gsp_connector_settings_content() {
                     <td><code>/get-admin-info</code></td>
                     <td><strong>Admin bilgileri</strong> - İlk Admin kullanıcısının temel bilgilerini döndürür (şifre hash'i dahil)</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>GET</code></td>
+                    <td><code>/get-system-info</code></td>
+                    <td><strong>Sistem bilgileri</strong> - PHP &amp; WordPress sürümü ile tüm eklentilerin durumunu döndürür</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2009,7 +2021,62 @@ Body (raw JSON):
   ]
 }</code></pre>
             
-            <h4>8.5 Hazırlık Kontrolü (GET)</h4>
+            <h4>9. Sistem Bilgileri (GET)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
+URL: <?php echo esc_html($api_base_url); ?>get-system-info
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?></code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 11px;"><code>{
+  "message": "Sistem bilgileri başarıyla çekildi.",
+  "data": {
+    "php_version": "8.2.12",
+    "wp_version": "6.4.2",
+    "plugins": [
+      {
+        "name": "GSP Connector",
+        "version": "1.0.121",
+        "status": "Active",
+        "file": "gsp-connector/gsp-connector.php"
+      },
+      {
+        "name": "WooCommerce",
+        "version": "8.3.0",
+        "status": "Active",
+        "file": "woocommerce/woocommerce.php"
+      }
+    ]
+  }
+}</code></pre>
+            
+            <h4>10. Toplu Import (POST)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+ URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
+ 
+ Headers:
+   X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+   Content-Type: application/json
+
+Body (raw JSON):
+{
+  "products": [
+    {
+      "sku": "PROD-001",
+      "name": "Ürün 1",
+      "regular_price": "100",
+      "stock_quantity": 25
+    },
+    {
+      "sku": "PROD-002",
+      "name": "Ürün 2",
+      "regular_price": "200",
+      "stock_quantity": 50
+    }
+  ]
+}</code></pre>
+            
+            <h4>10.5 Hazırlık Kontrolü (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>ready
 
@@ -2021,7 +2088,7 @@ Headers:
   "message": "GSP Connector aktif ve API iletişimi hazır."
 }</code></pre>
             
-            <h4>9. Aktif Sayfalar Listesi (GET)</h4>
+            <h4>11. Aktif Sayfalar Listesi (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
  URL: <?php echo esc_html($api_base_url); ?>pages
 
@@ -2065,7 +2132,7 @@ Headers:
   ]
 }</code></pre>
             
-            <h4>10. Sayfa Detayı - Tüm Veriler (GET)</h4>
+            <h4>12. Sayfa Detayı - Tüm Veriler (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>pages/123
 (Not: 123 yerine gerçek sayfa ID'sini yazın)
@@ -2274,5 +2341,42 @@ function gsp_get_admin_details( WP_REST_Request $request ) {
     return new WP_REST_Response( array(
         'message' => 'Admin bilgileri başarıyla çekildi.',
         'data'    => $details,
+    ), 200 );
+}
+
+// 10.6. Sistem ve Eklenti Bilgileri
+/**
+ * PHP sürümü, WP sürümü ve kurulu eklentilerin listesini döndürür.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_system_info( WP_REST_Request $request ) {
+    if ( ! function_exists( 'get_plugins' ) ) {
+        require_once ABSPATH . 'wp-admin/includes/plugin.php';
+    }
+
+    $all_plugins   = get_plugins();
+    $active_plugins = get_option( 'active_plugins', array() );
+    $plugin_list   = array();
+
+    foreach ( $all_plugins as $plugin_file => $plugin_data ) {
+        $plugin_list[] = array(
+            'name'    => $plugin_data['Name'] ?? $plugin_file,
+            'version' => $plugin_data['Version'] ?? 'N/A',
+            'status'  => in_array( $plugin_file, $active_plugins, true ) ? 'Active' : 'Inactive',
+            'file'    => $plugin_file,
+        );
+    }
+
+    $system_info = array(
+        'php_version' => phpversion(),
+        'wp_version'  => get_bloginfo( 'version' ),
+        'plugins'     => $plugin_list,
+    );
+
+    return new WP_REST_Response( array(
+        'message' => 'Sistem bilgileri başarıyla çekildi.',
+        'data'    => $system_info,
     ), 200 );
 }

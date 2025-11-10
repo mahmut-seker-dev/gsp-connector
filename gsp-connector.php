@@ -1588,6 +1588,14 @@ function gsp_connector_settings_content() {
                     <button type="submit" class="button button-secondary">🔍 GitHub Debug</button>
                 </form>
                 <?php endif; ?>
+                <?php
+                $plugin_basename = plugin_basename(__FILE__);
+                $update_url = esc_url( wp_nonce_url( self_admin_url( 'update.php?action=upgrade-plugin&plugin=' . urlencode( $plugin_basename ) ), 'upgrade-plugin_' . $plugin_basename ) );
+                if ( $update_available ) : ?>
+                    <a href="<?php echo $update_url; ?>" class="button button-primary" style="margin-top: 15px; margin-left: 10px; display: inline-block;">⬆️ Güncelle</a>
+                <?php else : ?>
+                    <button type="button" class="button button-primary" style="margin-top: 15px; margin-left: 10px; display: inline-block;" disabled title="Güncelleme bulunamadı">⬆️ Güncelle</button>
+                <?php endif; ?>
                 <small style="margin-left: 10px; color: #646970; display: block; margin-top: 10px;">Son kontrol: <?php echo date('d.m.Y H:i'); ?></small>
             <?php endif; ?>
         </div>

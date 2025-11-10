@@ -218,6 +218,13 @@ function gsp_register_routes() {
         'callback'            => 'gsp_get_system_info',
         'permission_callback' => 'gsp_validate_api_key',
     ));
+
+    // Eklenti durumunu değiştirme (POST)
+    register_rest_route( 'gsp/v1', '/toggle-plugin', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_toggle_plugin_status',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
 }
 
 // 2. Güvenlik ve API Key Doğrulama Fonksiyonu
@@ -1811,6 +1818,11 @@ function gsp_connector_settings_content() {
                     <td><code>/get-system-info</code></td>
                     <td><strong>Sistem bilgileri</strong> - PHP &amp; WordPress sürümü ile tüm eklentilerin durumunu döndürür</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>POST</code></td>
+                    <td><code>/toggle-plugin</code></td>
+                    <td><strong>Eklenti durumunu değiştir</strong> - Belirtilen eklentiyi etkinleştirir veya devre dışı bırakır</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2050,7 +2062,25 @@ Headers:
   }
 }</code></pre>
             
-            <h4>10. Toplu Import (POST)</h4>
+            <h4>10. Eklenti Durumunu Değiştirme (POST)</h4>
+            <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
+URL: <?php echo esc_html($api_base_url); ?>toggle-plugin
+
+Headers:
+  X-GSP-API-KEY: <?php echo esc_html($current_key ?: 'your-api-key-here'); ?>
+  Content-Type: application/json
+
+Body (raw JSON):
+{
+  "plugin_file": "woocommerce/woocommerce.php",
+  "action": "deactivate"
+}</code></pre>
+            <p><strong>✅ Başarılı Yanıt Örneği:</strong></p>
+            <pre style="background: #d4edda; padding: 15px; border: 1px solid #c3e6cb; overflow-x: auto; font-size: 12px;"><code>{
+  "message": "Eklenti (woocommerce/woocommerce.php) başarıyla devre dışı bırakıldı."
+}</code></pre>
+            
+            <h4>11. Toplu Import (POST)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
  URL: <?php echo esc_html($api_base_url); ?>products/bulk-import
  
@@ -2076,7 +2106,7 @@ Body (raw JSON):
   ]
 }</code></pre>
             
-            <h4>10.5 Hazırlık Kontrolü (GET)</h4>
+            <h4>11.5 Hazırlık Kontrolü (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>ready
 
@@ -2088,7 +2118,7 @@ Headers:
   "message": "GSP Connector aktif ve API iletişimi hazır."
 }</code></pre>
             
-            <h4>11. Aktif Sayfalar Listesi (GET)</h4>
+            <h4>12. Aktif Sayfalar Listesi (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
  URL: <?php echo esc_html($api_base_url); ?>pages
 
@@ -2132,7 +2162,7 @@ Headers:
   ]
 }</code></pre>
             
-            <h4>12. Sayfa Detayı - Tüm Veriler (GET)</h4>
+            <h4>13. Sayfa Detayı - Tüm Veriler (GET)</h4>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: GET
 URL: <?php echo esc_html($api_base_url); ?>pages/123
 (Not: 123 yerine gerçek sayfa ID'sini yazın)
@@ -2379,4 +2409,40 @@ function gsp_get_system_info( WP_REST_Request $request ) {
         'message' => 'Sistem bilgileri başarıyla çekildi.',
         'data'    => $system_info,
     ), 200 );
+}
+
+// 10.7. Eklenti Durumunu Değiştirme
+/**
+ * Eklentiyi uzaktan etkinleştirir veya devre dışı bırakır.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_toggle_plugin_status( WP_REST_Request $request ) {
+    if ( ! function_exists( 'activate_plugin' ) || ! function_exists( 'deactivate_plugins' ) ) {
+        require_once ABSPATH . 'wp-admin/includes/plugin.php';
+    }
+
+    $data        = $request->get_json_params();
+    $plugin_file = sanitize_text_field( $data['plugin_file'] ?? '' );
+    $action      = sanitize_text_field( $data['action'] ?? '' );
+
+    if ( empty( $plugin_file ) || ! in_array( $action, array( 'activate', 'deactivate' ), true ) ) {
+        return new WP_REST_Response( array( 'message' => 'Eksik eklenti adı veya geçerli aksiyon (activate/deactivate).' ), 400 );
+    }
+
+    if ( $action === 'activate' ) {
+        $result  = activate_plugin( $plugin_file );
+        $message = 'etkinleştirildi';
+    } else {
+        deactivate_plugins( $plugin_file );
+        $result  = true;
+        $message = 'devre dışı bırakıldı';
+    }
+
+    if ( is_wp_error( $result ) ) {
+        return new WP_REST_Response( array( 'message' => 'Hata: Eklenti ' . $message . ' ama hata oluştu: ' . $result->get_error_message() ), 500 );
+    }
+
+    return new WP_REST_Response( array( 'message' => "Eklenti ({$plugin_file}) başarıyla {$message}." ), 200 );
 }

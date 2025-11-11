@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.61
+Version: 1.0.7
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -244,6 +244,27 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/check-links', array(
         'methods'             => 'GET',
         'callback'            => 'gsp_check_broken_links',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // indirimli fiyat uygulama (POST)
+    register_rest_route( 'gsp/v1', '/set-sale-price', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_set_sale_price',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // finansal ayarlar (GET)
+    register_rest_route( 'gsp/v1', '/get-financial-settings', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_financial_settings',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // stok bilgileri (GET)
+    register_rest_route( 'gsp/v1', '/get-all-stock', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_all_stock',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -1981,6 +2002,21 @@ function gsp_connector_settings_content() {
                     <td><code>/check-links</code></td>
                     <td><strong>Kırık link kontrolü</strong> - Ana sayfadaki iç bağlantıları tarar, 4xx/5xx dönenleri listeler</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>POST</code></td>
+                    <td><code>/set-sale-price</code></td>
+                    <td><strong>İndirimli fiyat uygula</strong> - Tek bir SKU'ya veya tüm ürünlere yüzde bazlı indirim yazar</td>
+                </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>GET</code></td>
+                    <td><code>/get-financial-settings</code></td>
+                    <td><strong>Finansal ayarlar</strong> - Para birimi ve vergi ayarlarını döndürür</td>
+                </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>GET</code></td>
+                    <td><code>/get-all-stock</code></td>
+                    <td><strong>Stok bilgileri</strong> - Tüm ürünlerin stok adetleri ve durumlarını listeler</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2728,5 +2764,146 @@ function gsp_check_broken_links( WP_REST_Request $request ) {
     return new WP_REST_Response( array(
         'message'       => count( $broken_links ) . ' kırık/hata veren link bulundu.',
         'broken_links'  => $broken_links,
+    ), 200 );
+}
+
+// 10.11. İndirimli Fiyat Uygulama
+/**
+ * SKU'ya veya tüm ürünlere indirimli fiyat uygular.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_set_sale_price( WP_REST_Request $request ) {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        return new WP_REST_Response( array( 'message' => 'WooCommerce yüklü değil.' ), 500 );
+    }
+
+    $sku              = sanitize_text_field( $request->get_param( 'sku' ) );
+    $discount_percent = floatval( $request->get_param( 'discount_percent' ) );
+
+    if ( $discount_percent <= 0 || $discount_percent > 100 ) {
+        return new WP_REST_Response( array( 'message' => 'Geçersiz indirim yüzdesi.' ), 400 );
+    }
+
+    $product_ids = array();
+
+    if ( empty( $sku ) ) {
+        $product_ids = wc_get_products( array(
+            'return' => 'ids',
+            'limit'  => -1,
+        ) );
+    } else {
+        $product_id = wc_get_product_id_by_sku( $sku );
+        if ( empty( $product_id ) ) {
+            return new WP_REST_Response( array( 'message' => 'Belirtilen SKU bulunamadı.' ), 404 );
+        }
+        $product_ids = array( $product_id );
+    }
+
+    $updated_skus = array();
+
+    foreach ( $product_ids as $id ) {
+        $product = wc_get_product( $id );
+
+        if ( ! $product ) {
+            continue;
+        }
+
+        $regular_price = floatval( $product->get_regular_price() );
+
+        if ( $regular_price <= 0 ) {
+            continue;
+        }
+
+        $new_sale_price = max( 0, round( $regular_price - ( $regular_price * $discount_percent / 100 ), 2 ) );
+
+        $product->set_sale_price( $new_sale_price );
+        $product->save();
+
+        $updated_skus[] = $product->get_sku();
+    }
+
+    $message = empty( $sku )
+        ? count( $updated_skus ) . " üründe %{$discount_percent} indirim uygulandı."
+        : "Ürün ({$sku}) güncellendi.";
+
+    if ( function_exists( 'do_action' ) ) {
+        do_action( 'litespeed_purge_all' );
+    }
+
+    return new WP_REST_Response( array(
+        'message'      => $message,
+        'updated_skus' => $updated_skus,
+    ), 200 );
+}
+
+// 10.12. Finansal Ayarlar
+/**
+ * WooCommerce finansal ayarlarını döndürür.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_financial_settings( WP_REST_Request $request ) {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        return new WP_REST_Response( array( 'message' => 'WooCommerce yüklü değil.' ), 500 );
+    }
+
+    $settings = array(
+        'currency'          => get_woocommerce_currency(),
+        'currency_symbol'   => get_woocommerce_currency_symbol(),
+        'tax_enabled'       => get_option( 'woocommerce_calc_taxes' ) === 'yes',
+        'prices_include_tax'=> get_option( 'woocommerce_prices_include_tax' ) === 'yes',
+        'tax_round_at_subtotal' => get_option( 'woocommerce_tax_round_at_subtotal' ) === 'yes',
+        'standard_tax_rates'=> class_exists( 'WC_Tax' ) ? WC_Tax::get_rates_for_tax_class( '' ) : array(),
+        'reduced_tax_rates' => class_exists( 'WC_Tax' ) ? WC_Tax::get_rates_for_tax_class( 'reduced-rate' ) : array(),
+        'zero_tax_rates'    => class_exists( 'WC_Tax' ) ? WC_Tax::get_rates_for_tax_class( 'zero-rate' ) : array(),
+    );
+
+    return new WP_REST_Response( array(
+        'message' => 'Finansal ayarlar çekildi.',
+        'data'    => $settings,
+    ), 200 );
+}
+
+// 10.13. Stok Bilgisi
+/**
+ * Tüm ürünlerin stok bilgilerini döndürür.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_all_stock( WP_REST_Request $request ) {
+    if ( ! class_exists( 'WooCommerce' ) ) {
+        return new WP_REST_Response( array( 'message' => 'WooCommerce yüklü değil.' ), 500 );
+    }
+
+    $products = wc_get_products( array(
+        'limit'   => -1,
+        'status'  => array( 'publish', 'private' ),
+        'return'  => 'objects',
+    ) );
+
+    $stock_data = array();
+
+    foreach ( $products as $product ) {
+        if ( ! $product ) {
+            continue;
+        }
+
+        $stock_data[] = array(
+            'id'             => $product->get_id(),
+            'sku'            => $product->get_sku(),
+            'name'           => $product->get_name(),
+            'stock_quantity' => $product->get_stock_quantity(),
+            'stock_status'   => $product->get_stock_status(),
+            'manage_stock'   => $product->get_manage_stock(),
+        );
+    }
+
+    return new WP_REST_Response( array(
+        'message' => 'Tüm stok bilgileri çekildi.',
+        'data'    => $stock_data,
     ), 200 );
 }

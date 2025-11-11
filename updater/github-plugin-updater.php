@@ -48,7 +48,7 @@ class GitHub_Plugin_Updater {
         // Plugin bilgilerini al
         $plugin_data = get_file_data($plugin_file, array('Version' => 'Version', 'TextDomain' => 'Text Domain'));
         $this->plugin_slug = basename(dirname($plugin_file));
-        $this->base_version = $plugin_data['Version'];
+        $this->base_version = $this->clean_version($plugin_data['Version']);
         $this->installed_build = '';
         $this->last_commit_build = null;
         $this->last_commit_sha = null;
@@ -57,13 +57,9 @@ class GitHub_Plugin_Updater {
             $stored_build = get_option($this->get_build_option_key(), '');
             if (!empty($stored_build)) {
                 $this->installed_build = $stored_build;
-                $this->current_version = $this->base_version . '.' . $stored_build;
-            } else {
-                $this->current_version = $this->base_version;
             }
-        } else {
-            $this->current_version = $this->base_version;
         }
+        $this->current_version = $this->get_current_version_for_compare();
         
         // Cache ayarları
         $this->cache_key = 'gsp_github_update_check_' . md5($this->plugin_slug);
@@ -74,6 +70,7 @@ class GitHub_Plugin_Updater {
         add_filter('plugins_api', array($this, 'plugin_api_call'), 10, 3);
         add_filter('upgrader_post_install', array($this, 'post_install'), 10, 3);
         add_filter('upgrader_source_selection', array($this, 'upgrader_source_selection'), 10, 4);
+        add_action('admin_post_gsp_clear_cache', array($this, 'handle_admin_actions'));
         
         // Admin bildirimleri
         add_action('admin_notices', array($this, 'admin_notice'));
@@ -90,6 +87,8 @@ class GitHub_Plugin_Updater {
         if (empty($transient->checked) || !isset($transient->checked[$this->plugin_basename])) {
             return $transient;
         }
+
+        $this->current_version = $this->get_current_version_for_compare();
         
         // Installed version'ı transient'e yansıt
         $transient->checked[$this->plugin_basename] = $this->current_version;
@@ -273,7 +272,7 @@ class GitHub_Plugin_Updater {
      * @return string
      */
     private function clean_version($version) {
-        return preg_replace('/^v/', '', $version);
+        return ltrim(trim((string) $version), 'vV');
     }
     
     /**
@@ -284,30 +283,10 @@ class GitHub_Plugin_Updater {
      * @return bool Yeni versiyon varsa true
      */
     private function is_newer_version($current_version, $remote_version) {
-        if ($this->branch_only_mode) {
-            return version_compare($current_version, $remote_version, '<');
-        }
-        
-        // Normal mod: Release kontrolü
-        // Commit SHA'sını kaldır (tire sonrası kısmı)
-        $current_base = preg_replace('/-[a-f0-9]+$/', '', $current_version);
-        $remote_base = preg_replace('/-[a-f0-9]+$/', '', $remote_version);
-        
-        // Base versiyonları karşılaştır
-        $base_compare = version_compare($current_base, $remote_base);
-        
-        // Eğer base versiyonlar aynıysa, commit SHA'sı olan versiyon daha yeni sayılır (sadece branch'ten geldiğinde)
-        if ($base_compare === 0) {
-            // Eğer mevcut versiyonda SHA yok ama remote'da varsa, bu branch'ten geliyor demektir - güncelleme yok
-            if (strpos($current_version, '-') === false && strpos($remote_version, '-') !== false) {
-                return false; // Branch'ten gelen versiyon, release değil - güncelleme yok
-            }
-            // İkisinde de SHA varsa, sadece base versiyonları farklıysa güncelleme var
-            return false;
-        }
-        
-        // Base versiyonlar farklıysa, normal karşılaştırma
-        return $base_compare < 0;
+        $installed_version = $this->get_current_version_for_compare();
+        $remote_version = $this->clean_version($remote_version);
+
+        return version_compare($installed_version, $remote_version, '<');
     }
     
     /**
@@ -450,10 +429,7 @@ class GitHub_Plugin_Updater {
                 update_option($this->get_sha_option_key(), $this->last_commit_sha);
             }
             // Güncel versiyonu yeniden ayarla
-            $this->current_version = $this->base_version;
-            if (!empty($this->installed_build)) {
-                $this->current_version .= '.' . $this->installed_build;
-            }
+            $this->current_version = $this->get_current_version_for_compare();
         }
         
         // WordPress güncelleme cache'ini de temizle
@@ -552,6 +528,7 @@ class GitHub_Plugin_Updater {
             }
             $version = $this->extract_version_from_contents($body);
             if ($version) {
+                $version = $this->clean_version($version);
                 set_transient($cache_key, $version, 5 * MINUTE_IN_SECONDS);
                 return $version;
             }
@@ -571,6 +548,67 @@ class GitHub_Plugin_Updater {
             return trim($matches[1]);
         }
         return null;
+    }
+
+    /**
+     * Mevcut kurulu versiyonu karşılaştırma için hazırlar.
+     *
+     * @return string
+     */
+    private function get_current_version_for_compare() {
+        $plugin_data = get_file_data($this->plugin_file, array('Version' => 'Version'));
+        $base_version = !empty($plugin_data['Version']) ? $this->clean_version($plugin_data['Version']) : $this->base_version;
+
+        if ($this->branch_only_mode) {
+            if (empty($this->installed_build)) {
+                $stored_build = get_option($this->get_build_option_key(), '');
+                if (!empty($stored_build)) {
+                    $this->installed_build = $stored_build;
+                }
+            }
+
+            if (!empty($this->installed_build)) {
+                $base_version .= '.' . $this->installed_build;
+            }
+        }
+
+        return $base_version;
+    }
+
+    /**
+     * Admin tarafı işlemleri (ör. cache temizleme) yönetir.
+     */
+    public function handle_admin_actions() {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Bu işlemi yapmaya yetkiniz yok.', 'gsp-connector'));
+        }
+
+        $action = isset($_REQUEST['action']) ? sanitize_key(wp_unslash($_REQUEST['action'])) : '';
+
+        if ($action !== 'gsp_clear_cache') {
+            return;
+        }
+
+        if (!isset($_REQUEST['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_REQUEST['_wpnonce'])), 'gsp_clear_cache_action')) {
+            wp_die(__('Güvenlik kontrolü başarısız.', 'gsp-connector'));
+        }
+
+        delete_transient($this->cache_key);
+        delete_site_transient('update_plugins');
+
+        $remote_version_cache = 'gsp_remote_version_' . md5($this->plugin_slug . $this->github_branch);
+        delete_transient($remote_version_cache);
+
+        wp_safe_redirect(
+            add_query_arg(
+                array(
+                    'page' => 'gsp-connector-settings',
+                    'cache_cleared' => '1',
+                ),
+                admin_url('admin.php')
+            )
+        );
+        exit;
     }
 
     private function get_build_option_key() {

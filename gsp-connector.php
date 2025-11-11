@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.51
+Version: 1.0.6
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -230,6 +230,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/update-plugin', array(
         'methods'             => 'POST',
         'callback'            => 'gsp_update_plugin_remotely',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Veritabanı optimizasyonu (POST)
+    register_rest_route( 'gsp/v1', '/optimize-db', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_optimize_database',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -1957,6 +1964,11 @@ function gsp_connector_settings_content() {
                     <td><code>/update-plugin</code></td>
                     <td><strong>Eklenti güncelle</strong> - Belirtilen eklenti için WordPress güncelleme mekanizmasını tetikler</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>POST</code></td>
+                    <td><code>/optimize-db</code></td>
+                    <td><strong>Veritabanı optimize et</strong> - Tüm tablo ve indeksler üzerinde OPTIMIZE komutu çalıştırır</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2630,4 +2642,32 @@ function gsp_update_plugin_remotely( WP_REST_Request $request ) {
     }
 
     return new WP_REST_Response( array( 'message' => "Eklenti ({$plugin_file}) başarıyla güncellendi." ), 200 );
+}
+
+// 10.9. Veritabanı Optimizasyonu
+/**
+ * Uzaktan gelen istekle veritabanı tablolarını optimize eder.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_optimize_database( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $tables = $wpdb->get_results( 'SHOW TABLES', ARRAY_N );
+    $optimized_count = 0;
+
+    if ( ! empty( $tables ) ) {
+        foreach ( $tables as $table ) {
+            $table_name = $table[0];
+            $wpdb->query( "OPTIMIZE TABLE `{$table_name}`" );
+            $optimized_count++;
+        }
+    }
+
+    if ( $optimized_count > 0 ) {
+        return new WP_REST_Response( array( 'message' => "{$optimized_count} tablo başarıyla optimize edildi." ), 200 );
+    }
+
+    return new WP_REST_Response( array( 'message' => 'Veritabanı optimizasyonu tamamlanamadı.' ), 500 );
 }

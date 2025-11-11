@@ -5,7 +5,7 @@
  * WordPress eklentileri için GitHub üzerinden otomatik güncelleme kontrolü sağlar.
  * 
  * @package GSP_Connector
- * @version 1.0.51
+ * @version 1.0.6
  */
 
 if (!defined('ABSPATH')) {

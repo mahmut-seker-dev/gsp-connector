@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.6
+Version: 1.0.61
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -237,6 +237,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/optimize-db', array(
         'methods'             => 'POST',
         'callback'            => 'gsp_optimize_database',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // kırık link kontrolü (GET)
+    register_rest_route( 'gsp/v1', '/check-links', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_check_broken_links',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -1969,6 +1976,11 @@ function gsp_connector_settings_content() {
                     <td><code>/optimize-db</code></td>
                     <td><strong>Veritabanı optimize et</strong> - Tüm tablo ve indeksler üzerinde OPTIMIZE komutu çalıştırır</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>GET</code></td>
+                    <td><code>/check-links</code></td>
+                    <td><strong>Kırık link kontrolü</strong> - Ana sayfadaki iç bağlantıları tarar, 4xx/5xx dönenleri listeler</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2670,4 +2682,51 @@ function gsp_optimize_database( WP_REST_Request $request ) {
     }
 
     return new WP_REST_Response( array( 'message' => 'Veritabanı optimizasyonu tamamlanamadı.' ), 500 );
+}
+
+// 10.10. Kırık Link Kontrolü
+/**
+ * Ana sayfadaki iç linkleri tarar ve hata verenleri döndürür.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_check_broken_links( WP_REST_Request $request ) {
+    $home_url = get_home_url();
+    $home_content = wp_remote_retrieve_body( wp_remote_get( $home_url ) );
+
+    if ( empty( $home_content ) ) {
+        return new WP_REST_Response( array( 'message' => 'Ana sayfa içeriği alınamadı.' ), 500 );
+    }
+
+    preg_match_all( '/<a\s+(?:[^>]*?\s+)?href="([^"]*)"/i', $home_content, $matches );
+
+    $broken_links = array();
+
+    if ( ! empty( $matches[1] ) ) {
+        foreach ( $matches[1] as $link ) {
+            if ( strpos( $link, 'http' ) !== 0 ) {
+                $link = trailingslashit( $home_url ) . ltrim( $link, '/' );
+            }
+
+            if ( strpos( $link, $home_url ) !== 0 ) {
+                continue;
+            }
+
+            $response     = wp_remote_get( $link );
+            $status_code  = wp_remote_retrieve_response_code( $response );
+
+            if ( $status_code >= 400 ) {
+                $broken_links[] = array(
+                    'url'    => $link,
+                    'status' => $status_code,
+                );
+            }
+        }
+    }
+
+    return new WP_REST_Response( array(
+        'message'       => count( $broken_links ) . ' kırık/hata veren link bulundu.',
+        'broken_links'  => $broken_links,
+    ), 200 );
 }

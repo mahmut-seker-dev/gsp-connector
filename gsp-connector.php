@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.8
+Version: 1.0.9
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -265,6 +265,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/get-all-stock', array(
         'methods'             => 'GET',
         'callback'            => 'gsp_get_all_stock',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // güvenlik durumu (GET)
+    register_rest_route( 'gsp/v1', '/get-security-status', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_security_status',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -2034,6 +2041,11 @@ function gsp_connector_settings_content() {
                     <td><code>/get-all-stock</code></td>
                     <td><strong>Stok bilgileri</strong> - Tüm ürünlerin stok adetleri ve durumlarını listeler</td>
                 </tr>
+                <tr style="background-color: #ffe0e0;">
+                    <td><code>GET</code></td>
+                    <td><code>/get-security-status</code></td>
+                    <td><strong>Güvenlik durumu</strong> - Temel başarısız giriş sayısı + SSL kontrol gerekliliği bilgisi</td>
+                </tr>
             </tbody>
         </table>
         
@@ -2922,5 +2934,43 @@ function gsp_get_all_stock( WP_REST_Request $request ) {
     return new WP_REST_Response( array(
         'message' => 'Tüm stok bilgileri çekildi.',
         'data'    => $stock_data,
+    ), 200 );
+}
+
+// 10.14. Güvenlik ve SSL Durumu
+/**
+ * Basit güvenlik metriği ve SSL kontrol gereksinimini döndürür.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_security_status( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $failed_logins_count = 0;
+
+    if ( $wpdb instanceof wpdb ) {
+        $query = $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->prefix}options WHERE option_name LIKE %s AND option_value > %d",
+            $wpdb->esc_like( 'failed_login_attempts_' ) . '%',
+            0
+        );
+
+        $count = $wpdb->get_var( $query );
+
+        if ( null !== $count ) {
+            $failed_logins_count = (int) $count;
+        }
+    }
+
+    $security_data = array(
+        'failed_login_attempts_count' => $failed_logins_count,
+        'ssl_check_required'         => true,
+        'site_url'                   => get_site_url(),
+    );
+
+    return new WP_REST_Response( array(
+        'message' => 'Güvenlik verileri çekildi.',
+        'data'    => $security_data,
     ), 200 );
 }

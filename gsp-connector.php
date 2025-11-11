@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.7
+Version: 1.0.8
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -1436,6 +1436,22 @@ function gsp_check_github_version($username, $repo, $branch = 'main', $branch_on
     return null;
 }
 
+function gsp_clear_github_update_cache($username, $repo, $branch = 'main') {
+    $hash_base = $username . $repo . $branch;
+
+    $keys = array(
+        'gsp_github_version_check_' . md5($hash_base . '_release'),
+        'gsp_github_version_check_' . md5($hash_base . '_branch'),
+        'gsp_remote_plugin_version_' . md5($hash_base),
+        'gsp_latest_commit_info_' . md5($hash_base),
+        'gsp_remote_version_' . md5('gsp-connector' . $branch),
+    );
+
+    foreach ($keys as $key) {
+        delete_transient($key);
+    }
+}
+
 function gsp_fetch_remote_plugin_version($username, $repo, $branch = 'main') {
     $cache_key = 'gsp_remote_plugin_version_' . md5($username . $repo . $branch);
     $cached = get_transient($cache_key);
@@ -1598,7 +1614,7 @@ function gsp_connector_settings_content() {
     if (isset($_POST['check_version']) && wp_verify_nonce($_POST['_wpnonce'], 'check_version')) {
         if (!empty($github_username) && !empty($github_repo)) {
             // Cache'i temizle
-            delete_transient('gsp_github_version_check_' . md5($github_username . $github_repo));
+            gsp_clear_github_update_cache($github_username, $github_repo, $github_branch);
             $latest_version = gsp_check_github_version($github_username, $github_repo, $github_branch, $branch_only_mode);
             if ($latest_version && version_compare($current_version, $latest_version, '<')) {
                 $update_available = true;
@@ -1614,13 +1630,14 @@ function gsp_connector_settings_content() {
         // Tüm güncelleme cache'lerini temizle
         $cache_keys = array(
             'gsp_github_update_check_' . md5('gsp-connector'),
-            'gsp_github_version_check_' . md5($github_username . $github_repo),
             'update_plugins', // WordPress genel güncelleme cache'i
         );
         
         foreach ($cache_keys as $key) {
             delete_transient($key);
         }
+
+        gsp_clear_github_update_cache($github_username, $github_repo, $github_branch);
         
         // Site transient'i de temizle
         delete_site_transient('update_plugins');

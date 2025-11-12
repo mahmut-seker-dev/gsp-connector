@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.9
+Version: 1.0.92
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -251,6 +251,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/set-sale-price', array(
         'methods'             => 'POST',
         'callback'            => 'gsp_set_sale_price',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Rank Math meta senkronizasyonu (POST)
+    register_rest_route( 'gsp/v1', '/rankmath-seo-sync', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_update_rankmath_seo',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 
@@ -2864,6 +2871,43 @@ function gsp_set_sale_price( WP_REST_Request $request ) {
     return new WP_REST_Response( array(
         'message'      => $message,
         'updated_skus' => $updated_skus,
+    ), 200 );
+}
+
+// 10.12. Rank Math SEO Senkronizasyonu
+/**
+ * Rank Math meta verilerini günceller.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_update_rankmath_seo( WP_REST_Request $request ) {
+    if ( ! defined( 'RANK_MATH_VERSION' ) ) {
+        return new WP_REST_Response( array( 'message' => 'Rank Math aktif değil.' ), 500 );
+    }
+
+    $post_id         = intval( $request->get_param( 'post_id' ) );
+    $seo_title       = sanitize_text_field( $request->get_param( 'seo_title' ) );
+    $seo_description = sanitize_text_field( $request->get_param( 'seo_description' ) );
+
+    if ( $post_id <= 0 || ( empty( $seo_title ) && empty( $seo_description ) ) ) {
+        return new WP_REST_Response( array( 'message' => 'Eksik Post ID veya SEO verisi.' ), 400 );
+    }
+
+    if ( ! get_post( $post_id ) ) {
+        return new WP_REST_Response( array( 'message' => 'Belirtilen içerik bulunamadı.' ), 404 );
+    }
+
+    if ( ! empty( $seo_title ) ) {
+        update_post_meta( $post_id, 'rank_math_title', $seo_title );
+    }
+
+    if ( ! empty( $seo_description ) ) {
+        update_post_meta( $post_id, 'rank_math_description', $seo_description );
+    }
+
+    return new WP_REST_Response( array(
+        'message' => "Post ID {$post_id} için Rank Math SEO verileri güncellendi.",
     ), 200 );
 }
 

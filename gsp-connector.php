@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.0.92
+Version: 1.1.0
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -279,6 +279,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/get-security-status', array(
         'methods'             => 'GET',
         'callback'            => 'gsp_get_security_status',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // WooCommerce özellik açma/kapatma (POST)
+    register_rest_route( 'gsp/v1', '/toggle-feature', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_toggle_woocommerce_feature',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -2981,7 +2988,45 @@ function gsp_get_all_stock( WP_REST_Request $request ) {
     ), 200 );
 }
 
-// 10.14. Güvenlik ve SSL Durumu
+// 10.14. WooCommerce Özellik Açma/Kapatma
+/**
+ * WooCommerce veya WP'nin kritik bir ayarını uzaktan etkinleştirir (yes/no).
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_toggle_woocommerce_feature( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    $option_name = sanitize_text_field( $data['option_name'] ?? '' ); // Örn: woocommerce_enable_coupons
+    $value = sanitize_text_field( $data['value'] ?? '' ); // 'yes' veya 'no'
+
+    if ( empty($option_name) || !in_array($value, ['yes', 'no']) ) {
+        return new WP_REST_Response( array( 'message' => 'Eksik ayar adı veya geçerli değer (yes/no).' ), 400 );
+    }
+    
+    // GSP projesi için güvenli olan önceden tanımlı ayarları kontrol et (Güvenlik)
+    $allowed_options = [
+        'woocommerce_enable_coupons', // Kuponları etkinleştir/devre dışı bırak
+        'woocommerce_calc_taxes',     // Vergi hesaplamasını etkinleştir
+        'woocommerce_prices_include_tax', // Fiyatlara vergi dahil mi?
+    ];
+    if (!in_array($option_name, $allowed_options)) {
+         return new WP_REST_Response( array( 'message' => 'Bu ayarın uzaktan güncellenmesine izin verilmiyor.' ), 403 );
+    }
+
+    // Değeri kaydet
+    $success = update_option( $option_name, $value );
+    if ($success) {
+        $action = ($value === 'yes' ? 'etkinleştirildi' : 'devre dışı bırakıldı');
+        return new WP_REST_Response( array( 
+            'message' => "Ayar ({$option_name}) başarıyla {$action}." 
+        ), 200 );
+    }
+
+    return new WP_REST_Response( array( 'message' => 'Ayar kaydedilemedi (Belki zaten aynı değerdeydi).' ), 200 );
+}
+
+// 10.15. Güvenlik ve SSL Durumu
 /**
  * Basit güvenlik metriği ve SSL kontrol gereksinimini döndürür.
  *

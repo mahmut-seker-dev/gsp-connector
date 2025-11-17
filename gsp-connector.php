@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.1.0
+Version: 1.1.1
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -286,6 +286,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/toggle-feature', array(
         'methods'             => 'POST',
         'callback'            => 'gsp_toggle_woocommerce_feature',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Optimizasyon eklentisi ayarı değiştirme (POST)
+    register_rest_route( 'gsp/v1', '/toggle-optimization-setting', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_toggle_optimization_setting',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -3026,7 +3033,94 @@ function gsp_toggle_woocommerce_feature( WP_REST_Request $request ) {
     return new WP_REST_Response( array( 'message' => 'Ayar kaydedilemedi (Belki zaten aynı değerdeydi).' ), 200 );
 }
 
-// 10.15. Güvenlik ve SSL Durumu
+// 10.15. Optimizasyon Eklentisi Ayarı Değiştirme
+/**
+ * LiteSpeed Cache ve diğer optimizasyon eklentilerinin ayarlarını uzaktan değiştirir.
+ * 
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_toggle_optimization_setting( WP_REST_Request $request ) {
+    $data = $request->get_json_params();
+    $setting_key = sanitize_text_field( $data['setting_key'] ?? '' );
+    $value = $data['value'] ?? '';
+
+    if ( empty( $setting_key ) || $value === '' ) {
+        return new WP_REST_Response( 
+            array( 'message' => 'Eksik setting_key veya value parametresi.' ), 
+            400 
+        );
+    }
+
+    // Güvenlik: İzin verilen optimizasyon eklentisi prefix'leri
+    $allowed_prefixes = array(
+        'litespeed_cache_',      // LiteSpeed Cache
+        'autoptimize_',          // Autoptimize
+        'wp_rocket_',            // WP Rocket
+        'w3tc_',                 // W3 Total Cache
+        'wp_super_cache_',       // WP Super Cache
+        'wp_fastest_cache_',      // WP Fastest Cache
+    );
+
+    // İzin verilen prefix'lerden biriyle mi başlıyor?
+    $is_allowed = false;
+    foreach ( $allowed_prefixes as $prefix ) {
+        if ( strpos( $setting_key, $prefix ) === 0 ) {
+            $is_allowed = true;
+            break;
+        }
+    }
+
+    if ( ! $is_allowed ) {
+        return new WP_REST_Response( 
+            array( 
+                'message' => 'Bu optimizasyon ayarının uzaktan güncellenmesine izin verilmiyor.',
+                'setting_key' => $setting_key,
+                'allowed_prefixes' => $allowed_prefixes
+            ), 
+            403 
+        );
+    }
+
+    // Değeri kaydet (string, int, bool, array gibi farklı tipler olabilir)
+    $old_value = get_option( $setting_key );
+    $success = update_option( $setting_key, $value );
+
+    if ( $success ) {
+        return new WP_REST_Response( 
+            array( 
+                'message' => "Optimizasyon ayarı ({$setting_key}) başarıyla güncellendi.",
+                'setting_key' => $setting_key,
+                'old_value' => $old_value,
+                'new_value' => $value
+            ), 
+            200 
+        );
+    }
+
+    // update_option false dönerse, değer zaten aynı olabilir
+    $current_value = get_option( $setting_key );
+    if ( $current_value === $value ) {
+        return new WP_REST_Response( 
+            array( 
+                'message' => "Ayar ({$setting_key}) zaten bu değerde: {$value}",
+                'setting_key' => $setting_key,
+                'value' => $value
+            ), 
+            200 
+        );
+    }
+
+    return new WP_REST_Response( 
+        array( 
+            'message' => 'Ayar güncellenemedi. Bilinmeyen bir hata oluştu.',
+            'setting_key' => $setting_key
+        ), 
+        500 
+    );
+}
+
+// 10.16. Güvenlik ve SSL Durumu
 /**
  * Basit güvenlik metriği ve SSL kontrol gereksinimini döndürür.
  *

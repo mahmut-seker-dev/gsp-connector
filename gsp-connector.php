@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.1.1
+Version: 1.1.2
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -293,6 +293,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/toggle-optimization-setting', array(
         'methods'             => 'POST',
         'callback'            => 'gsp_toggle_optimization_setting',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Medya önizlemeleri (GET)
+    register_rest_route( 'gsp/v1', '/get-media-previews', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_media_previews',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -1015,6 +1022,68 @@ function gsp_get_active_pages( WP_REST_Request $request ) {
         'pages'       => $pages,
         'urls'        => $urls, // URL'ler ayrı array olarak
     ), 200);
+}
+
+// 13.6. Medya Önizlemeleri Fonksiyonu
+/**
+ * Son medya dosyalarının (görseller) URL, boyut ve dosya adı bilgilerini döndürür.
+ * 
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_media_previews( WP_REST_Request $request ) {
+    $params = $request->get_query_params();
+    $limit = isset($params['limit']) ? min(intval($params['limit']), 100) : 10; // Varsayılan 10, maksimum 100
+    
+    $args = array(
+        'post_type'      => 'attachment',
+        'post_mime_type' => 'image',
+        'posts_per_page' => $limit,
+        'orderby'        => 'date',
+        'order'          => 'DESC',
+        'post_status'    => 'inherit', // Attachment'lar için inherit kullanılır
+    );
+    
+    $attachments = get_posts( $args );
+    $media_list = array();
+    
+    foreach ( $attachments as $post ) {
+        // Dosya URL'si
+        $file_url = wp_get_attachment_url( $post->ID );
+        
+        // Dosya boyutunu al
+        $file_size = 0;
+        $metadata = wp_get_attachment_metadata( $post->ID );
+        if ( isset( $metadata['filesize'] ) ) {
+            $file_size = $metadata['filesize'];
+        } else {
+            // Metadata'da yoksa dosya yolundan kontrol et
+            $file_path = get_attached_file( $post->ID );
+            if ( $file_path && file_exists( $file_path ) ) {
+                $file_size = filesize( $file_path );
+            }
+        }
+        
+        // Dosya boyutunu okunabilir formata çevir
+        $file_size_formatted = size_format( $file_size, 2 );
+        
+        $media_list[] = array(
+            'id'                => $post->ID,
+            'title'             => $post->post_title,
+            'filename'          => basename( $file_url ),
+            'url'               => $file_url,
+            'thumbnail_url'     => wp_get_attachment_image_url( $post->ID, 'thumbnail' ),
+            'mime_type'         => $post->post_mime_type,
+            'file_size'         => $file_size, // Bayt cinsinden
+            'file_size_formatted' => $file_size_formatted, // Okunabilir format (KB, MB, vb.)
+        );
+    }
+    
+    return new WP_REST_Response( array( 
+        'data' => $media_list,
+        'count' => count( $media_list ),
+        'limit' => $limit,
+    ), 200 );
 }
 
 // 13.5. Sayfa Detayı - Tüm Veriler Fonksiyonu

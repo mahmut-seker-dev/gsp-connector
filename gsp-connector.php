@@ -3,7 +3,7 @@
 Plugin Name: GSP Connector
 Plugin URI: https://gsp.test
 Description: Global Site Pipeline (GSP) yönetim paneli için güvenli uzaktan yönetim ve GitHub güncelleme arayüzü.
-Version: 1.1.2
+Version: 1.1.3
 Author: Mahmut Şeker
 Author URI: https://mahmutseker.com
 */
@@ -300,6 +300,13 @@ function gsp_register_routes() {
     register_rest_route( 'gsp/v1', '/get-media-previews', array(
         'methods'             => 'GET',
         'callback'            => 'gsp_get_media_previews',
+        'permission_callback' => 'gsp_validate_api_key',
+    ));
+
+    // Medya dosyası yükleme (POST)
+    register_rest_route( 'gsp/v1', '/upload-media-file', array(
+        'methods'             => 'POST',
+        'callback'            => 'gsp_handle_remote_upload',
         'permission_callback' => 'gsp_validate_api_key',
     ));
 }
@@ -1083,6 +1090,73 @@ function gsp_get_media_previews( WP_REST_Request $request ) {
         'data' => $media_list,
         'count' => count( $media_list ),
         'limit' => $limit,
+    ), 200 );
+}
+
+// 13.7. Uzaktan Medya Yükleme Fonksiyonu
+/**
+ * Uzaktan gelen görsel dosyasını alır ve Medya Kütüphanesine yükler.
+ * 
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_handle_remote_upload( WP_REST_Request $request ) {
+    // 1. Dosya verisini kontrol et
+    if ( empty( $_FILES ) || empty( $_FILES['file'] ) ) {
+        return new WP_REST_Response( array( 
+            'success' => false,
+            'message' => 'Dosya bulunamadı.' 
+        ), 400 );
+    }
+
+    $file_array = $_FILES['file'];
+    
+    // 2. WP yükleme fonksiyonunu kullanmak için gereken dosyaları dahil et
+    if ( ! function_exists( 'wp_handle_upload' ) ) {
+        require_once( ABSPATH . 'wp-admin/includes/file.php' );
+    }
+
+    // 3. Yükleme işlemini başlat
+    $uploaded_file = wp_handle_upload( $file_array, array( 'test_form' => false ) );
+    
+    if ( ! empty( $uploaded_file['error'] ) ) {
+        return new WP_REST_Response( array( 
+            'success' => false,
+            'message' => 'WP Yükleme Hatası: ' . $uploaded_file['error'] 
+        ), 500 );
+    }
+
+    // 4. Görseli Medya Kütüphanesine kaydet
+    $attachment_id = wp_insert_attachment( array(
+        'post_mime_type' => $uploaded_file['type'],
+        'post_title'     => sanitize_file_name( $file_array['name'] ),
+        'post_content'   => '',
+        'post_status'    => 'inherit'
+    ), $uploaded_file['file'] );
+
+    // Hata kontrolü
+    if ( is_wp_error( $attachment_id ) ) {
+        return new WP_REST_Response( array( 
+            'success' => false,
+            'message' => 'Attachment oluşturma hatası: ' . $attachment_id->get_error_message() 
+        ), 500 );
+    }
+
+    // Gerekli WP metadata'sını ekle
+    require_once( ABSPATH . 'wp-admin/includes/image.php' );
+    $attachment_data = wp_generate_attachment_metadata( $attachment_id, $uploaded_file['file'] );
+    wp_update_attachment_metadata( $attachment_id, $attachment_data );
+
+    // Tam URL'yi al
+    $attachment_url = wp_get_attachment_url( $attachment_id );
+
+    return new WP_REST_Response( array( 
+        'success' => true,
+        'message' => 'Dosya başarıyla yüklendi.',
+        'attachment_id' => $attachment_id,
+        'url' => $attachment_url, // Yeni görselin WP URL'sini döndür
+        'filename' => basename( $uploaded_file['file'] ),
+        'file_size' => filesize( $uploaded_file['file'] ),
     ), 200 );
 }
 

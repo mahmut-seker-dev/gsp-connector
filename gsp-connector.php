@@ -17,14 +17,7 @@ add_action('plugins_loaded', function() {
     }
 }, 1);
 
-// WooCommerce'un yüklü olduğundan emin ol
-if ( ! in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', get_option( 'active_plugins' ) ) ) ) {
-    // WooCommerce aktif değilse, bir hata bildirimi göster.
-    add_action( 'admin_notices', function() {
-        echo '<div class="notice notice-error"><p>GSP Connector eklentisi, WooCommerce\'in aktif olmasını gerektirir.</p></div>';
-    });
-    return;
-}
+// WooCommerce isteğe bağlıdır; yüklü değilse ilgili özellikler devre dışı kalır.
 
 // =========================================================================
 // GITHUB OTOMATİK GÜNCELLEME MEKANİZMASI

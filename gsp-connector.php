@@ -198,6 +198,19 @@ function gsp_register_routes() {
         ),
     ));
 
+    // Sayfa meta güncelleme (POST / PATCH)
+    register_rest_route( 'gsp/v1', '/pages/(?P<id>\d+)/meta', array(
+        'methods'             => array( 'POST', 'PATCH' ),
+        'callback'            => 'gsp_update_page_meta',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
+
     // Admin bilgileri (GET)
     register_rest_route( 'gsp/v1', '/get-admin-info', array(
         'methods'             => 'GET',
@@ -833,6 +846,75 @@ function gsp_update_page_content( WP_REST_Request $request ) {
         'post_type' => $updated_post->post_type,
         'post_status' => $updated_post->post_status,
         'updated_at' => $updated_post->post_modified
+    ), 200 );
+}
+
+/**
+ * Sayfa/yazı meta alanlarını günceller.
+ * POST veya PATCH: /wp-json/gsp/v1/pages/{id}/meta
+ * Body: { "meta": { "meta_key": "value", "_another_key": "value2" } }
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_update_page_meta( WP_REST_Request $request ) {
+    $page_id = (int) $request['id'];
+    $data    = $request->get_json_params() ?: array();
+
+    // Body'de "meta" anahtarı veya doğrudan key-value kabul et
+    $meta = isset( $data['meta'] ) && is_array( $data['meta'] ) ? $data['meta'] : $data;
+
+    if ( empty( $meta ) ) {
+        return new WP_REST_Response( array(
+            'message'        => 'Güncellenecek meta alanı bulunamadı. Body: {"meta": {"meta_key": "value"}}',
+            'required_fields' => array( 'meta' ),
+        ), 400 );
+    }
+
+    $post = get_post( $page_id );
+    if ( ! $post ) {
+        return new WP_REST_Response( array(
+            'message' => "ID ($page_id) ile sayfa/yazı bulunamadı.",
+        ), 404 );
+    }
+
+    // Sadece page ve post tipine izin ver
+    if ( ! in_array( $post->post_type, array( 'page', 'post' ), true ) ) {
+        return new WP_REST_Response( array(
+            'message' => "Bu endpoint sadece sayfa (page) ve yazı (post) için kullanılabilir. Mevcut tip: {$post->post_type}.",
+        ), 400 );
+    }
+
+    $updated = array();
+    $errors  = array();
+
+    foreach ( $meta as $meta_key => $meta_value ) {
+        $meta_key = sanitize_text_field( (string) $meta_key );
+        if ( $meta_key === '' ) {
+            continue;
+        }
+        // Değer: string, number, array (serialize edilir)
+        if ( is_array( $meta_value ) ) {
+            $sanitized = array_map( 'sanitize_text_field', $meta_value );
+        } elseif ( is_numeric( $meta_value ) ) {
+            $sanitized = $meta_value;
+        } else {
+            $sanitized = sanitize_text_field( (string) $meta_value );
+        }
+        $result = update_post_meta( $page_id, $meta_key, $sanitized );
+        if ( $result !== false ) {
+            $updated[ $meta_key ] = $sanitized;
+        } else {
+            $errors[ $meta_key ] = 'Güncellenemedi';
+        }
+    }
+
+    return new WP_REST_Response( array(
+        'message'   => count( $updated ) ? "Sayfa (ID: $page_id) meta alanları güncellendi." : 'Hiçbir meta güncellenemedi.',
+        'post_id'   => $page_id,
+        'post_type' => $post->post_type,
+        'updated'   => $updated,
+        'errors'    => $errors,
     ), 200 );
 }
 

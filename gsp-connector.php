@@ -1799,17 +1799,16 @@ function gsp_fetch_latest_commit_info($username, $repo, $branch = 'main') {
 add_action('admin_menu', 'gsp_connector_settings_page');
 
 function gsp_connector_settings_page() {
-    // Ana menüde görünmesi için add_menu_page kullanıyoruz
+    $cap = apply_filters( 'gsp_connector_admin_capability', 'manage_options' );
     add_menu_page(
         'GSP Connector Ayarları',           // Sayfa başlığı
         'GSP Connector',                    // Menü adı
-        'manage_options',                    // Yetki
+        $cap,                               // Yetki (filtre ile değiştirilebilir)
         'gsp-connector-settings',           // Menü slug
         'gsp_connector_settings_content',   // Callback fonksiyon
         'dashicons-admin-network',          // İkon (WordPress dashicons)
         30                                   // Pozisyon (30 = WooCommerce'dan sonra)
     );
-    // Ayarları kaydetme fonksiyonunu kaydet
     add_action( 'admin_init', 'gsp_connector_register_settings' );
 }
 
@@ -1827,6 +1826,14 @@ function gsp_connector_register_settings() {
 }
 
 function gsp_connector_settings_content() {
+    $cap = apply_filters( 'gsp_connector_admin_capability', 'manage_options' );
+    if ( ! current_user_can( $cap ) ) {
+        wp_die(
+            esc_html__( 'Bu sayfaya erişim yetkiniz yok.', 'gsp-connector' ),
+            esc_html__( 'Erişim reddedildi', 'gsp-connector' ),
+            array( 'response' => 403, 'back_link' => true )
+        );
+    }
     $api_base_url = rest_url('gsp/v1/');
     $current_key = get_option('gsp_api_secret_key');
     $github_username = get_option('gsp_github_username', '');

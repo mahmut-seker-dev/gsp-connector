@@ -198,6 +198,19 @@ function gsp_register_routes() {
         ),
     ));
 
+    // Sayfa meta anahtarları listesi - Debug / karşılaştırma (GET)
+    register_rest_route( 'gsp/v1', '/pages/(?P<id>\d+)/meta-keys', array(
+        'methods'             => 'GET',
+        'callback'            => 'gsp_get_page_meta_keys',
+        'permission_callback' => 'gsp_validate_api_key',
+        'args'                => array(
+            'id' => array(
+                'required' => true,
+                'type'     => 'integer',
+            ),
+        ),
+    ));
+
     // Sayfa meta güncelleme (POST / PATCH)
     register_rest_route( 'gsp/v1', '/pages/(?P<id>\d+)/meta', array(
         'methods'             => array( 'POST', 'PATCH' ),
@@ -850,9 +863,36 @@ function gsp_update_page_content( WP_REST_Request $request ) {
 }
 
 /**
+ * Meta değerini iç içe yapıyı koruyarak sanitize eder (tema _metabox / _page_settings için gerekli).
+ *
+ * @param mixed $value
+ * @return mixed
+ */
+function gsp_sanitize_meta_value( $value ) {
+    if ( is_array( $value ) ) {
+        return array_map( 'gsp_sanitize_meta_value', $value );
+    }
+    if ( is_string( $value ) ) {
+        return sanitize_text_field( $value );
+    }
+    if ( is_int( $value ) || is_float( $value ) ) {
+        return $value;
+    }
+    if ( is_bool( $value ) ) {
+        return $value;
+    }
+    if ( $value === null ) {
+        return $value;
+    }
+    return $value;
+}
+
+/**
  * Sayfa/yazı meta alanlarını günceller.
  * POST veya PATCH: /wp-json/gsp/v1/pages/{id}/meta
- * Body: { "meta": { "meta_key": "value", "_another_key": "value2" } }
+ * Body: { "meta": { "_internal": { "_metabox": {...}, "_page_settings": {...} }, "pageSettings": {...} } }
+ * - meta._internal gelirse içindeki _metabox ve _page_settings ayrı post meta olarak kaydedilir (tema bu anahtarları okur).
+ * - Diğer her meta anahtarı (pageSettings, tema özel alanları vb.) doğrudan update_post_meta ile yazılır.
  *
  * @param WP_REST_Request $request
  * @return WP_REST_Response
@@ -893,16 +933,31 @@ function gsp_update_page_meta( WP_REST_Request $request ) {
         if ( $meta_key === '' ) {
             continue;
         }
-        // Değer: string, number, array (serialize edilir)
-        if ( is_array( $meta_value ) ) {
-            $sanitized = array_map( 'sanitize_text_field', $meta_value );
-        } elseif ( is_numeric( $meta_value ) ) {
-            $sanitized = $meta_value;
-        } else {
-            $sanitized = sanitize_text_field( (string) $meta_value );
+
+        // Blueprint Manager paneli meta._internal içinde _metabox ve _page_settings gönderir.
+        // Tema get_post_meta($id, '_metabox') ve get_post_meta($id, '_page_settings') okur;
+        // bu yüzden _internal gelirse açıp ayrı anahtarlar olarak kaydediyoruz.
+        if ( $meta_key === '_internal' && is_array( $meta_value ) ) {
+            $internal_sanitized = gsp_sanitize_meta_value( $meta_value );
+            if ( isset( $internal_sanitized['_metabox'] ) ) {
+                update_post_meta( $page_id, '_metabox', $internal_sanitized['_metabox'] );
+                $updated['_metabox'] = $internal_sanitized['_metabox'];
+            }
+            if ( isset( $internal_sanitized['_page_settings'] ) ) {
+                update_post_meta( $page_id, '_page_settings', $internal_sanitized['_page_settings'] );
+                $updated['_page_settings'] = $internal_sanitized['_page_settings'];
+            }
+            continue;
         }
-        $result = update_post_meta( $page_id, $meta_key, $sanitized );
-        if ( $result !== false ) {
+
+        // Diğer anahtarlar: string, number, array (iç içe yapı korunur)
+        $sanitized = gsp_sanitize_meta_value( $meta_value );
+        $result    = update_post_meta( $page_id, $meta_key, $sanitized );
+        $current   = get_post_meta( $page_id, $meta_key, true );
+        $already_equal = ( $result !== false ) || ( $current === $sanitized )
+            || ( is_array( $current ) && is_array( $sanitized ) && $current == $sanitized )
+            || ( (string) maybe_serialize( $current ) === (string) maybe_serialize( $sanitized ) );
+        if ( $already_equal ) {
             $updated[ $meta_key ] = $sanitized;
         } else {
             $errors[ $meta_key ] = 'Güncellenemedi';
@@ -1310,7 +1365,9 @@ function gsp_get_page_full( WP_REST_Request $request ) {
             $page_data['meta'][$key] = is_array($value) && count($value) === 1 ? $value[0] : $value;
         }
     }
-    
+    // Meta anahtar listesi (Laravel / karşılaştırma için: hangi anahtarlar yazılıp okunuyor)
+    $page_data['meta_keys'] = array_values(array_keys($all_meta));
+
     // Elementor verileri (eğer Elementor kullanılıyorsa)
     if (class_exists('\Elementor\Plugin')) {
         $elementor_data = get_post_meta($page_id, '_elementor_data', true);
@@ -1415,6 +1472,36 @@ function gsp_get_page_full( WP_REST_Request $request ) {
     }
     
     return new WP_REST_Response($page_data, 200);
+}
+
+/**
+ * Sayfa meta anahtarları listesi (GET /pages/{id}/meta-keys).
+ * Tema/eklentinin hangi meta anahtarını okuduğunu karşılaştırmak için kullanılır.
+ *
+ * @param WP_REST_Request $request
+ * @return WP_REST_Response
+ */
+function gsp_get_page_meta_keys( WP_REST_Request $request ) {
+    $page_id = intval( $request['id'] );
+    $post = get_post( $page_id );
+
+    if ( ! $post ) {
+        return new WP_REST_Response( array(
+            'message' => "ID ($page_id) ile sayfa/yazı bulunamadı.",
+        ), 404 );
+    }
+
+    $all_meta = get_post_meta( $page_id );
+    $meta_keys = array_values( array_keys( $all_meta ) );
+    sort( $meta_keys );
+
+    return new WP_REST_Response( array(
+        'id'         => $page_id,
+        'title'      => get_the_title( $page_id ),
+        'post_type'  => $post->post_type,
+        'meta_keys'  => $meta_keys,
+        'count'      => count( $meta_keys ),
+    ), 200 );
 }
 
 // 14. Google Sheets API ile Import Fonksiyonu
@@ -2235,7 +2322,12 @@ function gsp_connector_settings_content() {
                 <tr style="background-color: #e8f5e9;">
                     <td><code>GET</code></td>
                     <td><code>/pages/{id}</code></td>
-                    <td><strong>Sayfa detayı (tüm veriler)</strong> - Sayfa/yazının tüm detaylarını döndürür (içerik, meta, Elementor, ACF, SEO, vs.)</td>
+                    <td><strong>Sayfa detayı (tüm veriler)</strong> - Sayfa/yazının tüm detaylarını döndürür (içerik, meta, meta_keys listesi, Elementor, ACF, SEO, vs.)</td>
+                </tr>
+                <tr style="background-color: #e8f5e9;">
+                    <td><code>GET</code></td>
+                    <td><code>/pages/{id}/meta-keys</code></td>
+                    <td><strong>Sayfa meta anahtarları</strong> - Sadece o sayfanın post meta anahtar isimlerini listeler (tema/eklenti karşılaştırması için)</td>
                 </tr>
                 <tr style="background-color: #ffe0e0;">
                     <td><code>POST</code></td>
@@ -2439,6 +2531,7 @@ Body (raw JSON):
 }</code></pre>
             
             <h4>6. Sayfa/Yazı İçeriği Güncelleme (POST)</h4>
+            <p class="description" style="margin: 10px 0; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107;"><strong>Not:</strong> Güncellemeden sonra önbellek kullanıyorsanız (LiteSpeed vb.) <code>POST /purge-cache</code> ile önbelleği temizleyin. Bu endpoint sadece <code>post_content</code> (sayfa metni) alanını günceller. Tema veya eklenti hangi meta anahtarını okuyor (get_post_meta / tema dosyaları) kontrol edin; sayfa bölümleri veya özel meta için <code>POST /pages/{id}/meta</code> kullanın. Meta anahtar listesini görmek için <code>GET /pages/{id}/meta-keys</code> veya <code>GET /pages/{id}</code> içindeki <code>meta_keys</code> alanını kullanabilirsiniz.</p>
             <pre style="background: #fff; padding: 15px; border: 1px solid #ddd; overflow-x: auto;"><code>Method: POST
 URL: <?php echo esc_html($api_base_url); ?>update-page-content
 
